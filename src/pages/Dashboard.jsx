@@ -265,6 +265,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [loadingMsg, setLoadingMsg] = useState('Caricamento deals...');
   const [hasData, setHasData] = useState(null);
+  const [error, setError] = useState(null);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [quickArea, setQuickArea] = useState(null);
   const [kpiDetail, setKpiDetail] = useState(null);
@@ -273,28 +274,35 @@ export default function Dashboard() {
 
   const loadData = useCallback(async () => {
     setLoading(true);
+    setError(null);
 
-    // PERFORMANCE: load deals and portfolio in parallel
-    setLoadingMsg('Caricamento parallelo deals e portafoglio...');
-    const [rawDeals, rawPtf] = await Promise.all([
-      loadEntityAll(base44.entities.Deal),
-      loadEntityAll(base44.entities.PortafoglioCliente),
-    ]);
+    try {
+      // PERFORMANCE: load deals and portfolio in parallel
+      setLoadingMsg('Caricamento parallelo deals e portafoglio...');
+      const [rawDeals, rawPtf] = await Promise.all([
+        loadEntityAll(base44.entities.Deal),
+        loadEntityAll(base44.entities.PortafoglioCliente),
+      ]);
 
-    if (!rawDeals || rawDeals.length === 0) {
+      if (!rawDeals || rawDeals.length === 0) {
+        setHasData(false);
+        return;
+      }
+
+      setLoadingMsg('Elaborazione dati...');
+      // Run enrichment off the main tick to keep UI responsive
+      await new Promise(r => setTimeout(r, 0));
+      const enriched = enrichDealsWithPortfolio(rawDeals, rawPtf);
+
+      setHasData(true);
+      setAllDeals(enriched);
+    } catch (err) {
+      console.error('[Dashboard] Errore caricamento:', err);
+      setError(err?.message || 'Errore sconosciuto');
       setHasData(false);
+    } finally {
       setLoading(false);
-      return;
     }
-
-    setLoadingMsg('Elaborazione dati...');
-    // Run enrichment off the main tick to keep UI responsive
-    await new Promise(r => setTimeout(r, 0));
-    const enriched = enrichDealsWithPortfolio(rawDeals, rawPtf);
-
-    setHasData(true);
-    setAllDeals(enriched);
-    setLoading(false);
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
@@ -376,8 +384,22 @@ export default function Dashboard() {
         </button>
       </div>
 
+      {/* ── Error Banner ── */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-4 flex items-start gap-3">
+          <div className="w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">!</div>
+          <div>
+            <p className="text-sm font-semibold text-red-700">Errore durante il caricamento</p>
+            <p className="text-xs text-red-500 mt-0.5 font-mono">{error}</p>
+            <button onClick={loadData} className="mt-2 text-xs text-red-600 underline font-medium hover:text-red-800">
+              Riprova
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── No Data ── */}
-      {hasData === false && (
+      {hasData === false && !error && (
         <div className="bg-white rounded-2xl border border-dashed border-gray-300 p-12 text-center">
           <FileText className="w-12 h-12 text-gray-300 mx-auto mb-3" />
           <h3 className="text-lg font-semibold text-gray-700">Nessun dato caricato</h3>
