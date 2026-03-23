@@ -1,0 +1,34 @@
+# Dipendenze
+/node_modules
+
+# Output di build/compilazione
+/dist
+/build
+/out
+
+# File di log
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+.log
+
+# File di configurazione dell'ambiente
+.env
+.env.development
+.env.production
+.env.local
+.env.development.local
+.env.production.local
+
+# File specifici di Firebase CLI
+.firebase/
+firebase-debug.log
+.firebaserc # Questo file contiene il Project ID, se hai intenzione di clonare e usare questo progetto con un altro Firebase Project ID, potresti volerlo ignorare. Se vuoi che tutti i dev lavorino sullo stesso project ID, lo puoi includere. Per iniziare, puoi ignorarlo.
+
+# File del sistema operativo
+.DS_Store
+Thumbs.db
+
+# Credenziali (se per sbaglio ne avessi)
+*.pem
+*.key
