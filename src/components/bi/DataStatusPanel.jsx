@@ -7,7 +7,7 @@ const ANNI = ['2024', '2025', '2026'];
 async function countByAnno(anno) {
   try {
     let total = 0;
-    const PAGE = 5000;
+    const PAGE = 100;
     let skip = 0;
 
     while (true) {
