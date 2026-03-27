@@ -26,42 +26,52 @@ function normalizeLob(lob, specialist, descrizione, tipo) {
 
 Deno.serve(async (req) => {
   const base44 = createClientFromRequest(req);
+
   const user = await base44.auth.me();
   if (user?.role !== 'admin') return Response.json({ error: 'Admin only' }, { status: 403 });
 
   const body = await req.json().catch(() => ({}));
   const deals = body.deals;
-
   if (!deals?.length) return Response.json({ error: 'deals required' }, { status: 400 });
 
-  // Normalize LOB server-side before inserting
   const normalizedDeals = deals.map(d => ({
     ...d,
-    lob: normalizeLob(d.lob_originale || d.lob || '', d.specialist || '', d.descrizione || '', d.tipo || 'CTR'),
+    lob: normalizeLob(
+      d.lob_originale || d.lob || '',
+      d.specialist || '',
+      d.descrizione || '',
+      d.tipo || 'CTR'
+    ),
   }));
 
   const BATCH = 100;
   let inserted = 0;
+  const errors = [];
+
   for (let i = 0; i < normalizedDeals.length; i += BATCH) {
     const chunk = normalizedDeals.slice(i, i + BATCH);
     let attempts = 0;
-    while (attempts < 3) {
+    let success = false;
+
+    while (attempts < 3 && !success) {
       attempts++;
       try {
-        await base44.asServiceRole.entities.Deal.bulkCreate(chunk);
-
+        // ✅ Senza asServiceRole — è l'unico modo che funziona in Deno functions
+        await base44.entities.Deal.bulkCreate(chunk);
         inserted += chunk.length;
-        break;
+        success = true;
       } catch (e) {
         if (attempts >= 3) {
-        errors.push({ batch: i, error: e.message });
-        break;
-      }
-        await new Promise(r => setTimeout(r, 1000 * attempts));
+          errors.push({ batch: Math.floor(i / BATCH), error: e.message });
+        } else {
+          await new Promise(r => setTimeout(r, 1000 * attempts));
+        }
       }
     }
-    await new Promise(r => setTimeout(r, 200));
+
+    // Pausa tra batch per non sovraccaricare Base44
+    await new Promise(r => setTimeout(r, 300));
   }
 
-  return Response.json({ success: true, inserted });
+  return Response.json({ success: true, inserted, errors });
 });
