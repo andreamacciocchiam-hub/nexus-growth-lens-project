@@ -8,9 +8,6 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: .
 
     steps:
       - uses: actions/checkout@v3
@@ -21,15 +18,13 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm install
-        working-directory: .
 
       - name: Build frontend
         run: npm run build
-        working-directory: .
 
       - name: Install functions dependencies
         run: npm install
-        working-directory: ./functions
+        working-directory: functions
 
       - name: Deploy to Firebase Hosting
         uses: FirebaseExtended/action-hosting-deploy@v0
@@ -40,4 +35,3 @@ jobs:
 
       - name: Deploy Firebase Functions
         run: npx firebase-tools@latest deploy --only functions --token "${{ secrets.FIREBASE_TOKEN }}"
-        working-directory: .
