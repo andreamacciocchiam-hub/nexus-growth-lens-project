@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
+import { useCurrentUser } from '@/api/base44Client'; // ← guardia auth
 import { CheckCircle, XCircle, RefreshCw, Database, AlertCircle } from 'lucide-react';
 
 const ANNI = ['2024', '2025', '2026'];
@@ -27,11 +28,15 @@ async function countByAnno(anno) {
 }
 
 export default function DataStatusPanel({ refreshTrigger }) {
+  const currentUser = useCurrentUser(); // ← utente corrente da Firebase Auth
   const [counts, setCounts] = useState({});
   const [loading, setLoading] = useState(false);
   const [lastChecked, setLastChecked] = useState(null);
 
   const refresh = async () => {
+    // ✅ Non fare nulla se l'utente non è ancora autenticato
+    if (!currentUser) return;
+
     setLoading(true);
     try {
       const entries = await Promise.all(
@@ -47,8 +52,11 @@ export default function DataStatusPanel({ refreshTrigger }) {
   };
 
   useEffect(() => {
+    // ✅ L'effect si ri-esegue quando currentUser diventa disponibile
+    // oppure quando arriva un refreshTrigger esterno
+    if (!currentUser) return; // aspetta auth prima di fare qualsiasi cosa
     refresh();
-  }, [refreshTrigger]);
+  }, [currentUser, refreshTrigger]); // ← currentUser come dipendenza
 
   const getStatus = (anno) => {
     const count = counts[anno];
@@ -96,7 +104,7 @@ export default function DataStatusPanel({ refreshTrigger }) {
         </div>
         <button
           onClick={refresh}
-          disabled={loading}
+          disabled={loading || !currentUser}
           className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-40"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
@@ -104,30 +112,37 @@ export default function DataStatusPanel({ refreshTrigger }) {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {ANNI.map(anno => {
-          const s = getStatus(anno);
-          return (
-            <div key={anno} className={`rounded-xl border border-l-4 ${borderColor(s)} p-4 bg-gray-50`}>
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Anno {anno}</span>
-                  <div className="flex items-center gap-2 mt-1">
-                    {loading ? (
-                      <RefreshCw className="w-4 h-4 text-gray-300 animate-spin" />
-                    ) : (
-                      statusIcon(s)
-                    )}
-                    <span className={`text-sm font-semibold ${textColor(s)}`}>
-                      {loading ? 'conteggio...' : (s?.label ?? '...')}
-                    </span>
+      {/* Se l'utente non è ancora autenticato mostra uno stato neutro */}
+      {!currentUser ? (
+        <div className="text-center py-4 text-xs text-gray-400">
+          In attesa di autenticazione…
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {ANNI.map(anno => {
+            const s = getStatus(anno);
+            return (
+              <div key={anno} className={`rounded-xl border border-l-4 ${borderColor(s)} p-4 bg-gray-50`}>
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Anno {anno}</span>
+                    <div className="flex items-center gap-2 mt-1">
+                      {loading ? (
+                        <RefreshCw className="w-4 h-4 text-gray-300 animate-spin" />
+                      ) : (
+                        statusIcon(s)
+                      )}
+                      <span className={`text-sm font-semibold ${textColor(s)}`}>
+                        {loading ? 'conteggio...' : (s?.label ?? '...')}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
