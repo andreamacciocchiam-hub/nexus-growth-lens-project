@@ -3,6 +3,13 @@ const admin = require('firebase-admin');
 admin.initializeApp();
 const db = admin.firestore();
 
+// ✅ Configurazione comune: CORS aperto + invoker pubblico
+const FN_CONFIG = {
+  region: 'europe-west1',
+  cors: true,          // ← fix CORS
+  invoker: 'public',   // ← consente chiamate da browser autenticati
+};
+
 const VALID_LOB = ['Cloud', 'Connettività', 'IoT', 'Other IT', 'Licensing', 'Security'];
 
 function normalizeLob(lob, specialist, descrizione, tipo) {
@@ -29,13 +36,12 @@ function normalizeLob(lob, specialist, descrizione, tipo) {
 
 // ─── importDealsJSON ───────────────────────────────────────────────
 exports.importDealsJSON = onCall(
-  { region: 'europe-west1', timeoutSeconds: 300, memory: '512MiB' },
+  { ...FN_CONFIG, timeoutSeconds: 300, memory: '512MiB' },
   async (request) => {
     if (!request.auth) throw new Error('Non autenticato');
     const { deals } = request.data;
     if (!Array.isArray(deals)) throw new Error('deals deve essere un array');
 
-    // Normalizza LOB prima di inserire
     const normalizedDeals = deals.map(d => ({
       ...d,
       lob: normalizeLob(
@@ -46,7 +52,7 @@ exports.importDealsJSON = onCall(
       ),
     }));
 
-    const CHUNK = 100; // ✅ ridotto da 400 a 100 per stabilità
+    const CHUNK = 100;
     let inserted = 0;
 
     for (let i = 0; i < normalizedDeals.length; i += CHUNK) {
@@ -57,7 +63,6 @@ exports.importDealsJSON = onCall(
         inserted++;
       });
       await batch.commit();
-      // Pausa tra batch per non sovraccaricare Firestore
       await new Promise(r => setTimeout(r, 200));
     }
 
@@ -67,7 +72,7 @@ exports.importDealsJSON = onCall(
 
 // ─── deleteChunk ───────────────────────────────────────────────────
 exports.deleteChunk = onCall(
-  { region: 'europe-west1', timeoutSeconds: 540, memory: '256MiB' },
+  { ...FN_CONFIG, timeoutSeconds: 540, memory: '256MiB' },
   async (request) => {
     if (!request.auth) throw new Error('Non autenticato');
     const { anno } = request.data;
@@ -92,7 +97,7 @@ exports.deleteChunk = onCall(
 
 // ─── enrichLob ────────────────────────────────────────────────────
 exports.enrichLob = onCall(
-  { region: 'europe-west1', timeoutSeconds: 300 },
+  { ...FN_CONFIG, timeoutSeconds: 300 },
   async (request) => {
     if (!request.auth) throw new Error('Non autenticato');
     const { anno, offset = 0 } = request.data;
@@ -105,7 +110,12 @@ exports.enrichLob = onCall(
     snap.docs.forEach(d => {
       const data = d.data();
       batch.update(d.ref, {
-        lob: normalizeLob(data.lob_originale || data.lob || '', data.specialist || '', data.descrizione || '', data.tipo || 'CTR')
+        lob: normalizeLob(
+          data.lob_originale || data.lob || '',
+          data.specialist || '',
+          data.descrizione || '',
+          data.tipo || 'CTR'
+        )
       });
     });
     await batch.commit();
@@ -118,6 +128,7 @@ exports.enrichLob = onCall(
 );
 
 // ─── ping ─────────────────────────────────────────────────────────
-exports.ping = onCall({ region: 'europe-west1' }, async () => {
-  return { ok: true, ts: Date.now() };
-});
+exports.ping = onCall(
+  { ...FN_CONFIG },
+  async () => ({ ok: true, ts: Date.now() })
+);
