@@ -16,20 +16,25 @@ jobs:
           node-version: 20
 
       # ── Build frontend ──
-      - run: npm install
-      - run: npm run build
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build frontend
+        run: npm run build
 
       # ── Install functions dependencies ──
-      - run: npm install
+      - name: Install functions dependencies
+        run: npm install
         working-directory: functions
 
-      # ── Deploy hosting + functions insieme ──
-      - uses: FirebaseExtended/action-hosting-deploy@v0
+      # ── Deploy hosting ──
+      - name: Deploy to Firebase Hosting
+        uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: '${{ secrets.GITHUB_TOKEN }}'
           firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
           channelId: live
-          entryPoint: '.'
 
+      # ── Deploy functions ──
       - name: Deploy Firebase Functions
         run: npx firebase-tools@latest deploy --only functions --token "${{ secrets.FIREBASE_TOKEN }}"
