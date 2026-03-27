@@ -1,15 +1,41 @@
 import { useState, useRef } from 'react';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { httpsCallable } from 'firebase/functions';
-import { storage } from '@/api/firebaseClient';
 import { functionsInstance } from '@/api/firebaseClient';
 import { Upload, X, Check, Loader2 } from 'lucide-react';
 import { PORTAFOGLI } from './DealsFilters';
 
 async function callFn(name, payload) {
-  const fn = httpsCallable(functionsInstance, name);
+  const fn = httpsCallable(functionsInstance, name, { timeout: 300000 });
   const res = await fn(payload);
   return res.data;
+}
+
+async function parsePortafoglioExcel(file) {
+  const XLSX = await import('https://cdn.sheetjs.com/xlsx-0.20.1/package/xlsx.mjs');
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: 'array' });
+  const sheetName = wb.SheetNames[0];
+  const sheet = wb.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+
+  const str = v => (v != null && String(v).trim() !== '' ? String(v).trim() : null);
+
+  return rows.map(r => ({
+    cf:                 str(r['CF']),
+    cf_capogruppo:      str(r['CF CAPOGRUPPO']),
+    ragione_sociale:    str(r['RAG_SOC']) || str(r['Capogruppo']) || 'N/D',
+    capogruppo:         str(r['Capogruppo']),
+    vertical_gruppo:    str(r['VERTICAL Gruppo']),
+    segmento_26:        str(r['SEGMENTO CLIENTE 2026']),
+    area_rac:           str(r['AREA RAC']),
+    rac:                str(r['RAC']),
+    area_mng:           str(r['AREA MNG']),
+    struttura_sales:    str(r['STRUTTURA SALES CORE']),
+    area_rac_26:        str(r['AREA RAC 26']),
+    rac_26:             str(r['RAC 26']),
+    area_mng_26:        str(r['AREA MNG 26']),
+    struttura_sales_26: str(r['STRUTTURA SALES CORE 26']),
+  })).filter(r => r.ragione_sociale);
 }
 
 export default function ImportPortafoglioButton({ onImported }) {
@@ -18,34 +44,42 @@ export default function ImportPortafoglioButton({ onImported }) {
   const [nome, setNome] = useState(PORTAFOGLI[0]);
   const [state, setState] = useState('idle');
   const [msg, setMsg] = useState('');
-  const ref2 = useRef(null);
+  const fileRef = useRef(null);
 
   const handleImport = async () => {
     if (!file) return;
     setState('loading');
     try {
-      // 1. Upload file su Firebase Storage
-      setMsg('Upload file in corso...');
-      const storageRef = ref(storage, `portafogli/${nome}_${Date.now()}.xlsx`);
-      await uploadBytes(storageRef, file);
-      const fileUrl = await getDownloadURL(storageRef);
+      setMsg('Parsing Excel...');
+      const records = await parsePortafoglioExcel(file);
 
-      // 2. Chiama la Cloud Function
-      setMsg('Importazione clienti...');
-      const data = await callFn('importPortafoglioClienti', {
-        file_url: fileUrl,
-        portafoglio_nome: nome
-      });
-
-      if (data?.ok) {
-        setState('success');
-        setMsg(`${data.inserted} clienti importati`);
-        onImported && onImported();
-        setTimeout(() => { setOpen(false); setState('idle'); setFile(null); }, 2500);
-      } else {
+      if (records.length === 0) {
         setState('error');
-        setMsg(data?.error || 'Errore import');
+        setMsg('Nessun record valido trovato nel file');
+        return;
       }
+
+      setMsg(`Importazione ${records.length} clienti...`);
+
+      // Manda i record JSON direttamente — niente xlsx nella function
+      const CHUNK = 200;
+      let inserted = 0;
+
+      for (let i = 0; i < records.length; i += CHUNK) {
+        const chunk = records.slice(i, i + CHUNK);
+        const data = await callFn('importPortafoglioClienti', {
+          records: chunk,
+          portafoglio_nome: nome,
+          isFirst: i === 0, // la function cancella i vecchi solo al primo chunk
+        });
+        inserted += data.inserted || 0;
+        setMsg(`Importazione... ${inserted}/${records.length} clienti`);
+      }
+
+      setState('success');
+      setMsg(`${inserted} clienti importati`);
+      onImported && onImported();
+      setTimeout(() => { setOpen(false); setState('idle'); setFile(null); }, 2500);
     } catch (e) {
       setState('error');
       setMsg(e.message || 'Errore import');
@@ -54,10 +88,8 @@ export default function ImportPortafoglioButton({ onImported }) {
 
   return (
     <>
-      <button
-        onClick={() => setOpen(true)}
-        className="flex items-center gap-2 px-3 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-medium transition-colors"
-      >
+      <button onClick={() => setOpen(true)}
+        className="flex items-center gap-2 px-3 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-medium transition-colors">
         <Upload className="w-3.5 h-3.5" /> Importa Anagrafica
       </button>
 
@@ -80,7 +112,7 @@ export default function ImportPortafoglioButton({ onImported }) {
               </div>
               <div>
                 <label className="text-xs font-medium text-gray-600 block mb-1">File Excel (.xlsx)</label>
-                <input ref={ref2} type="file" accept=".xlsx,.xls"
+                <input ref={fileRef} type="file" accept=".xlsx,.xls"
                   onChange={e => setFile(e.target.files[0])}
                   className="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:bg-purple-50 file:text-purple-700 file:font-medium hover:file:bg-purple-100" />
               </div>
