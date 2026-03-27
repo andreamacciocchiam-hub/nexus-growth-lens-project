@@ -1,5 +1,5 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { auth } from '@/api/firebaseClient';
 
 const AuthContext = createContext();
@@ -33,13 +33,22 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  const loginWithGoogle = async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+    } catch (e) {
+      throw new Error('Accesso con Google non riuscito');
+    }
+  };
+
   const logout = () => signOut(auth);
   const navigateToLogin = () => { window.location.href = '/login'; };
 
   return (
     <AuthContext.Provider value={{
       user, isAuthenticated, isLoadingAuth, isLoadingPublicSettings,
-      authError, logout, navigateToLogin, login
+      authError, logout, navigateToLogin, login, loginWithGoogle
     }}>
       {children}
     </AuthContext.Provider>
