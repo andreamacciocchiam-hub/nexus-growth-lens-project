@@ -1,50 +1,26 @@
 name: Deploy to Firebase
+
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
       - uses: actions/setup-node@v3
         with:
           node-version: 18
+
       - run: npm install
+
       - run: npm run build
+
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
-          repoToken: ${{ secrets.GITHUB_TOKEN }}
-          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          repoToken: '${{ secrets.GITHUB_TOKEN }}'
+          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
           channelId: live
-```
-
-5. Clicca **"Commit changes"**
-
----
-
-## 2. Aggiungi il secret Firebase su GitHub
-
-Questo è l'unico passaggio tecnico — da fare una volta sola:
-
-1. Vai su **Firebase Console → Impostazioni progetto → Account di servizio**
-2. Clicca **"Genera nuova chiave privata"** → scarica il file JSON
-3. Vai su **GitHub → tuo repo → Settings → Secrets and variables → Actions**
-4. Clicca **"New repository secret"**
-5. Nome: `FIREBASE_SERVICE_ACCOUNT`
-6. Valore: incolla tutto il contenuto del file JSON scaricato
-7. Clicca **"Add secret"**
-
----
-
-## Il flusso da quel momento in poi
-```
-Modifichi un file su GitHub dal browser
-           ↓
-Clicchi "Commit changes"
-           ↓
-GitHub Actions fa tutto da solo
-(npm install → build → deploy)
-           ↓
-App online aggiornata in ~2 minuti ✅
