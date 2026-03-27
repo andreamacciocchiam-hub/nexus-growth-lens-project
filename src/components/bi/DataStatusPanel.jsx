@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
-import { useCurrentUser } from '@/api/base44Client'; // ← guardia auth
+import { auth } from '@/api/firebaseClient';
+import { onAuthStateChanged } from 'firebase/auth';
 import { CheckCircle, XCircle, RefreshCw, Database, AlertCircle } from 'lucide-react';
 
 const ANNI = ['2024', '2025', '2026'];
@@ -28,13 +29,18 @@ async function countByAnno(anno) {
 }
 
 export default function DataStatusPanel({ refreshTrigger }) {
-  const currentUser = useCurrentUser(); // ← utente corrente da Firebase Auth
+  const [currentUser, setCurrentUser] = useState(null);
   const [counts, setCounts] = useState({});
   const [loading, setLoading] = useState(false);
   const [lastChecked, setLastChecked] = useState(null);
 
+  // Ascolta lo stato di autenticazione Firebase
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, user => setCurrentUser(user));
+    return () => unsub();
+  }, []);
+
   const refresh = async () => {
-    // ✅ Non fare nulla se l'utente non è ancora autenticato
     if (!currentUser) return;
 
     setLoading(true);
@@ -51,12 +57,11 @@ export default function DataStatusPanel({ refreshTrigger }) {
     }
   };
 
+  // Parte solo quando currentUser è disponibile
   useEffect(() => {
-    // ✅ L'effect si ri-esegue quando currentUser diventa disponibile
-    // oppure quando arriva un refreshTrigger esterno
-    if (!currentUser) return; // aspetta auth prima di fare qualsiasi cosa
+    if (!currentUser) return;
     refresh();
-  }, [currentUser, refreshTrigger]); // ← currentUser come dipendenza
+  }, [currentUser, refreshTrigger]);
 
   const getStatus = (anno) => {
     const count = counts[anno];
@@ -112,7 +117,6 @@ export default function DataStatusPanel({ refreshTrigger }) {
         </button>
       </div>
 
-      {/* Se l'utente non è ancora autenticato mostra uno stato neutro */}
       {!currentUser ? (
         <div className="text-center py-4 text-xs text-gray-400">
           In attesa di autenticazione…
