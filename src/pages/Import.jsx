@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
+import { httpsCallable } from 'firebase/functions';
+import { functionsInstance } from '@/api/firebaseClient';
 import {
   Upload, CheckCircle, AlertCircle, Loader2, X,
   Trash2, Clock, FileSpreadsheet, AlertTriangle, ChevronDown, ChevronUp
@@ -7,6 +8,13 @@ import {
 import DeleteDataModal from '../components/bi/DeleteDataModal';
 import ImportPortafoglioButton from '../components/bi/ImportPortafoglioButton';
 import DataStatusPanel from '../components/bi/DataStatusPanel';
+
+// ─── Helper: chiama una Firebase Cloud Function ───────────────────
+async function callFn(name, payload) {
+  const fn = httpsCallable(functionsInstance, name);
+  const res = await fn(payload);
+  return res.data;
+}
 
 const ANNI = [
   { anno: '2024', label: '2024', color: 'gray', hint: 'storico' },
@@ -240,14 +248,13 @@ function ActiveImportPanel({ task, onDone, onEnrichLob }) {
       if (dataRiferimento) addLog(`  Data riferimento: ${dataRiferimento}`);
 
       try {
-        // ── 1. Warm-up ping per evitare cold start sul primo batch reale ──
+        // ── 1. Warm-up ping ──
         addLog('⟳ Warm-up connessione...');
         try {
-          await base44.functions.invoke('ping', {});
+          await callFn('ping', {});
           await new Promise(r => setTimeout(r, 500));
           addLog('✓ Connessione pronta', 'success');
         } catch (_) {
-          // ping opzionale: se la funzione non esiste non blocca
           addLog('  (ping non disponibile, continuo)', 'warn');
         }
 
@@ -263,7 +270,7 @@ function ActiveImportPanel({ task, onDone, onEnrichLob }) {
           return;
         }
 
-        // ── 3. Loop di import con continuazione sui batch falliti ──
+        // ── 3. Loop di import ──
         const CHUNK = 200;
         let totalInserted = 0;
         let batchNum = 0;
@@ -271,7 +278,6 @@ function ActiveImportPanel({ task, onDone, onEnrichLob }) {
 
         for (let i = 0; i < deals.length; i += CHUNK) {
           if (cancelled) break;
-
           batchNum++;
           const chunk = deals.slice(i, i + CHUNK);
           addLog(`⟳ Batch #${batchNum} — righe ${i + 1}–${i + chunk.length}...`);
@@ -283,9 +289,9 @@ function ActiveImportPanel({ task, onDone, onEnrichLob }) {
           while (attempts < 3) {
             attempts++;
             try {
-              const res = await base44.functions.invoke('importDealsJSON', { deals: chunk });
-              if (!res.data?.success) throw new Error(res.data?.error || 'risposta non valida');
-              totalInserted += res.data.inserted || 0;
+              const data = await callFn('importDealsJSON', { deals: chunk });
+              if (!data?.success) throw new Error(data?.error || 'risposta non valida');
+              totalInserted += data.inserted || 0;
               success = true;
               break;
             } catch (e) {
@@ -298,7 +304,6 @@ function ActiveImportPanel({ task, onDone, onEnrichLob }) {
           }
 
           if (!success) {
-            // ← NON throw: logga, salva per retry, e continua col batch successivo
             addLog(`✗ Batch #${batchNum} saltato (3 tentativi): ${lastError}`, 'error');
             failedBatches.push({ batchNum, startIdx: i, chunk });
             await new Promise(r => setTimeout(r, 1000));
@@ -307,12 +312,10 @@ function ActiveImportPanel({ task, onDone, onEnrichLob }) {
 
           setProgress({ inserted: totalInserted, total: totalRows, batch: batchNum });
           addLog(`✓ Batch #${batchNum}: ${totalInserted.toLocaleString('it-IT')}/${totalRows.toLocaleString('it-IT')}`, 'success');
-
-          // Pausa tra batch per non martellare Base44
           await new Promise(r => setTimeout(r, 300));
         }
 
-        // ── 4. Retry automatico dei batch falliti ──
+        // ── 4. Retry batch falliti ──
         if (failedBatches.length > 0 && !cancelled) {
           addLog(`⟳ Retry di ${failedBatches.length} batch saltati...`, 'warn');
           await new Promise(r => setTimeout(r, 3000));
@@ -321,9 +324,9 @@ function ActiveImportPanel({ task, onDone, onEnrichLob }) {
             if (cancelled) break;
             addLog(`⟳ Retry batch #${bn}...`);
             try {
-              const res = await base44.functions.invoke('importDealsJSON', { deals: chunk });
-              if (!res.data?.success) throw new Error(res.data?.error || 'risposta non valida');
-              totalInserted += res.data.inserted || 0;
+              const data = await callFn('importDealsJSON', { deals: chunk });
+              if (!data?.success) throw new Error(data?.error || 'risposta non valida');
+              totalInserted += data.inserted || 0;
               setProgress({ inserted: totalInserted, total: totalRows, batch: batchNum });
               addLog(`✓ Retry batch #${bn} OK`, 'success');
             } catch (e) {
@@ -334,7 +337,6 @@ function ActiveImportPanel({ task, onDone, onEnrichLob }) {
         }
 
         addLog(`━━ Import completato: ${totalInserted.toLocaleString('it-IT')} righe inserite ━━`, 'success');
-
         if (!cancelled) await onEnrichLob(anno, addLog);
 
         setState('done');
@@ -501,31 +503,28 @@ export default function Import() {
   };
 
   const runEnrichLob = async (anno, addLog) => {
-  addLog(`⟳ Normalizzazione LOB anno ${anno}...`);
-  try {
-    let offset = 0;
-    let totalUpdated = 0;
-    let round = 0;
+    addLog(`⟳ Normalizzazione LOB anno ${anno}...`);
+    try {
+      let offset = 0;
+      let totalProcessed = 0;
+      let round = 0;
 
-    while (true) {
-      round++;
-      const res = await base44.functions.invoke('enrichLob', { anno, offset });
-      const { updated, total, hasMore } = res.data;
-      totalUpdated += updated;
-      offset += total;
+      while (true) {
+        round++;
+        const data = await callFn('enrichLob', { anno, offset });
+        totalProcessed += data.processed || 0;
+        offset = totalProcessed;
 
-      // Log ogni 5 round per non spammare
-      if (round % 5 === 0 || !hasMore) {
-        addLog(`  LOB: ${offset.toLocaleString('it-IT')} record processati, ${totalUpdated.toLocaleString('it-IT')} aggiornati...`);
+        if (round % 5 === 0 || !data.hasMore) {
+          addLog(`  LOB: ${totalProcessed.toLocaleString('it-IT')} record processati...`);
+        }
+        if (!data.hasMore) break;
       }
 
-      if (!hasMore) break;
+      addLog(`✓ LOB normalizzati su ${totalProcessed.toLocaleString('it-IT')} record`, 'success');
+    } catch (e) {
+      addLog(`⚠ Normalizzazione LOB fallita: ${e.message} — puoi rieseguirla manualmente`, 'warn');
     }
-
-    addLog(`✓ LOB normalizzati: ${totalUpdated} aggiornati su ${offset.toLocaleString('it-IT')} totali`, 'success');
-  } catch (e) {
-    addLog(`⚠ Normalizzazione LOB fallita: ${e.message} — puoi rieseguirla manualmente`, 'warn');
-  }
   };
 
   const clearHistory = () => {
