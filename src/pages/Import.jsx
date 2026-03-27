@@ -271,7 +271,7 @@ function ActiveImportPanel({ task, onDone, onEnrichLob }) {
         }
 
         // ── 3. Loop di import ──
-        const CHUNK = 200;
+        const CHUNK = 50;
         let totalInserted = 0;
         let batchNum = 0;
         const failedBatches = [];
