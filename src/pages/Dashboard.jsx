@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useData } from '@/lib/DataContext.jsx';
 import {
   Euro, TrendingUp, TrendingDown, FileText, RefreshCw,
