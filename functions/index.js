@@ -1,5 +1,6 @@
 const { onCall } = require('firebase-functions/v2/https');
 const admin = require('firebase-admin');
+const { getStorage } = require('firebase-admin/storage');
 admin.initializeApp();
 const db = admin.firestore();
 
@@ -33,14 +34,12 @@ function normalizeLob(lob, specialist, descrizione, tipo) {
   return 'Other IT';
 }
 
-// ─── Aggregazione: calcola KPI per un anno e salva in Firestore ────
+// ─── Aggregazione ──────────────────────────────────────────────────
 async function computeAndSaveAggregates(anno) {
   const snap = await db.collection('deals').where('anno', '==', String(anno)).get();
   const deals = snap.docs.map(d => d.data());
-
   const sum = (arr, f) => arr.reduce((s, d) => s + (d[f] || 0), 0);
 
-  // KPI globali
   const kpi = {
     n: deals.length,
     serv: sum(deals, 'serv_i_anno'),
@@ -52,71 +51,55 @@ async function computeAndSaveAggregates(anno) {
     ttv: deals.filter(d => d.tipo === 'TTV').length,
   };
 
-  // Per area
-  const byArea = {};
+  const byArea = {}, byLob = {}, byRac = {}, byMese = {}, clientMap = {};
+
   deals.forEach(d => {
-    const k = d.area_rac || 'N/D';
-    if (!byArea[k]) byArea[k] = { area: k, serv: 0, canoni: 0, diff: 0, att: 0, dif: 0, n: 0 };
-    byArea[k].serv += d.serv_i_anno || 0;
-    byArea[k].canoni += d.canoni || 0;
-    byArea[k].diff += d.differenziale_servizi || 0;
-    if (d.attacco_difesa === 'Attacco') byArea[k].att += d.serv_i_anno || 0;
-    else byArea[k].dif += d.serv_i_anno || 0;
-    byArea[k].n++;
+    const area = d.area_rac || 'N/D';
+    if (!byArea[area]) byArea[area] = { area, serv: 0, canoni: 0, diff: 0, att: 0, dif: 0, n: 0 };
+    byArea[area].serv += d.serv_i_anno || 0;
+    byArea[area].canoni += d.canoni || 0;
+    byArea[area].diff += d.differenziale_servizi || 0;
+    if (d.attacco_difesa === 'Attacco') byArea[area].att += d.serv_i_anno || 0;
+    else byArea[area].dif += d.serv_i_anno || 0;
+    byArea[area].n++;
+
+    const lob = d.lob || 'N/D';
+    if (!byLob[lob]) byLob[lob] = { lob, serv: 0, canoni: 0, n: 0 };
+    byLob[lob].serv += d.serv_i_anno || 0;
+    byLob[lob].canoni += d.canoni || 0;
+    byLob[lob].n++;
+
+    const rac = d.rac || 'N/D';
+    if (!byRac[rac]) byRac[rac] = { rac, area: d.area_rac || '', serv: 0, n: 0 };
+    byRac[rac].serv += d.serv_i_anno || 0;
+    byRac[rac].n++;
+
+    if (d.mese && d.mese > 0) {
+      const k = String(d.mese);
+      if (!byMese[k]) byMese[k] = { mese: d.mese, serv: 0, canoni: 0, diff: 0, n: 0 };
+      byMese[k].serv += d.serv_i_anno || 0;
+      byMese[k].canoni += d.canoni || 0;
+      byMese[k].diff += d.differenziale_servizi || 0;
+      byMese[k].n++;
+    }
+
+    const nome = d.ragione_sociale_capogruppo || d.ragione_sociale || 'N/D';
+    if (!clientMap[nome]) clientMap[nome] = { nome, area: d.area_rac || '', rac: d.rac || '', serv: 0, canoni: 0, diff: 0, att: 0, n: 0, lobs: {} };
+    clientMap[nome].serv += d.serv_i_anno || 0;
+    clientMap[nome].canoni += d.canoni || 0;
+    clientMap[nome].diff += d.differenziale_servizi || 0;
+    if (d.attacco_difesa === 'Attacco') clientMap[nome].att += d.serv_i_anno || 0;
+    clientMap[nome].n++;
+    if (d.lob) clientMap[nome].lobs[d.lob] = (clientMap[nome].lobs[d.lob] || 0) + 1;
   });
 
-  // Per LOB
-  const byLob = {};
-  deals.forEach(d => {
-    const k = d.lob || 'N/D';
-    if (!byLob[k]) byLob[k] = { lob: k, serv: 0, canoni: 0, n: 0 };
-    byLob[k].serv += d.serv_i_anno || 0;
-    byLob[k].canoni += d.canoni || 0;
-    byLob[k].n++;
-  });
-
-  // Per RAC
-  const byRac = {};
-  deals.forEach(d => {
-    const k = d.rac || 'N/D';
-    if (!byRac[k]) byRac[k] = { rac: k, area: d.area_rac || '', serv: 0, n: 0 };
-    byRac[k].serv += d.serv_i_anno || 0;
-    byRac[k].n++;
-  });
-
-  // Per mese (trend mensile)
-  const byMese = {};
-  deals.forEach(d => {
-    if (!d.mese || d.mese === 0) return;
-    const k = String(d.mese);
-    if (!byMese[k]) byMese[k] = { mese: d.mese, serv: 0, canoni: 0, diff: 0, n: 0 };
-    byMese[k].serv += d.serv_i_anno || 0;
-    byMese[k].canoni += d.canoni || 0;
-    byMese[k].diff += d.differenziale_servizi || 0;
-    byMese[k].n++;
-  });
-
-  // Top 50 clienti
-  const clientMap = {};
-  deals.forEach(d => {
-    const k = d.ragione_sociale_capogruppo || d.ragione_sociale || 'N/D';
-    if (!clientMap[k]) clientMap[k] = { nome: k, area: d.area_rac || '', rac: d.rac || '', serv: 0, canoni: 0, diff: 0, att: 0, n: 0, lobs: {} };
-    clientMap[k].serv += d.serv_i_anno || 0;
-    clientMap[k].canoni += d.canoni || 0;
-    clientMap[k].diff += d.differenziale_servizi || 0;
-    if (d.attacco_difesa === 'Attacco') clientMap[k].att += d.serv_i_anno || 0;
-    clientMap[k].n++;
-    if (d.lob) clientMap[k].lobs[d.lob] = (clientMap[k].lobs[d.lob] || 0) + 1;
-  });
   const topClienti = Object.values(clientMap)
     .sort((a, b) => b.serv - a.serv)
     .slice(0, 100)
     .map(c => ({ ...c, lobs: Object.keys(c.lobs).join(', ') }));
 
-  // Salva in Firestore
   await db.collection('aggregati').doc(String(anno)).set({
-    anno: String(anno),
-    kpi,
+    anno: String(anno), kpi,
     byArea: Object.values(byArea),
     byLob: Object.values(byLob),
     byRac: Object.values(byRac).sort((a, b) => b.serv - a.serv).slice(0, 50),
@@ -138,12 +121,7 @@ exports.importDealsJSON = onCall(
 
     const normalizedDeals = deals.map(d => ({
       ...d,
-      lob: normalizeLob(
-        d.lob_originale || d.lob || '',
-        d.specialist || '',
-        d.descrizione || '',
-        d.tipo || 'CTR'
-      ),
+      lob: normalizeLob(d.lob_originale || d.lob || '', d.specialist || '', d.descrizione || '', d.tipo || 'CTR'),
     }));
 
     const CHUNK = 100;
@@ -159,16 +137,119 @@ exports.importDealsJSON = onCall(
       await new Promise(r => setTimeout(r, 200));
     }
 
-    // Se è l'ultimo batch, ricalcola gli aggregati per questo anno
-    if (isLast && anno) {
-      await computeAndSaveAggregates(anno);
-    }
-
+    if (isLast && anno) await computeAndSaveAggregates(anno);
     return { success: true, inserted };
   }
 );
 
-// ─── aggregateDeals: ricalcola manualmente gli aggregati ──────────
+// ─── importFromStorage ─────────────────────────────────────────────
+// Legge un file Excel da Firebase Storage e reimporta l'anno
+exports.importFromStorage = onCall(
+  { ...FN_CONFIG, timeoutSeconds: 540, memory: '1GiB' },
+  async (request) => {
+    if (!request.auth) throw new Error('Non autenticato');
+    const { storagePath, anno } = request.data;
+    if (!storagePath || !anno) throw new Error('storagePath e anno obbligatori');
+
+    // Scarica il file da Storage
+    const bucket = getStorage().bucket();
+    const file = bucket.file(storagePath);
+    const [buffer] = await file.download();
+
+    // Parse Excel con xlsx
+    const XLSX = require('xlsx');
+    const wb = XLSX.read(buffer, { type: 'buffer' });
+    const sheetName = wb.SheetNames.find(n => n.includes(anno)) || wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+    const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+
+    const headerIdx = rawRows.findIndex(row => row.some(c => String(c ?? '').trim() === 'ID SDW'));
+    if (headerIdx === -1) throw new Error('Header "ID SDW" non trovato');
+
+    const header = rawRows[headerIdx].map(h => String(h ?? '').trim());
+    const dataRows = rawRows.slice(headerIdx + 1);
+
+    const findCol = (...names) => header.findIndex(h => h && names.some(n => h.toLowerCase().includes(n.toLowerCase())));
+    const C = {
+      id: header.indexOf('ID SDW'),
+      capogruppo: findCol('Ragione Sociale Capogruppo'),
+      rs: header.findIndex(h => h === 'Ragione Sociale'),
+      desc: header.indexOf('Descrizione'),
+      areaRac: findCol('NEW AREA RAC', 'AREA RAC'),
+      rac: header.indexOf('RAC'),
+      ad: findCol('Attacco/Difesa', 'Attacco / Difesa', 'A/D'),
+      lob: findCol('LOB'),
+      specialist: header.indexOf('SPECIALIST'),
+      mese: header.indexOf('Mese'),
+      durata: header.indexOf('Durata'),
+      servIAnno: findCol('serv I anno'),
+      canoni: findCol('Canoni', 'di cui Can'),
+      diffServ: findCol('Differenziale Servizi'),
+    };
+
+    const parseNum = (val) => { if (!val && val !== 0) return 0; const n = parseFloat(String(val).replace(',', '.')); return isNaN(n) ? 0 : n; };
+    const parseStr = (val) => val == null ? '' : String(val).trim();
+
+    const deals = [];
+    for (const arr of dataRows) {
+      const id = arr[C.id];
+      if (!id || !String(id).startsWith('OP-')) continue;
+      const mese = parseNum(arr[C.mese]);
+      const tipo = mese === 0 ? 'TTV' : 'CTR';
+      const lobRaw = parseStr(arr[C.lob]);
+      const lobVal = lobRaw && !isNaN(Number(lobRaw)) ? '' : lobRaw;
+      const adRaw = parseStr(arr[C.ad]).toLowerCase();
+
+      deals.push({
+        portafoglio: 'Base', anno, tipo,
+        id_sdw: parseStr(arr[C.id]),
+        ragione_sociale_capogruppo: parseStr(arr[C.capogruppo]),
+        ragione_sociale: parseStr(arr[C.rs]),
+        descrizione: parseStr(arr[C.desc]),
+        area_rac: parseStr(arr[C.areaRac]),
+        rac: parseStr(arr[C.rac]),
+        attacco_difesa: adRaw === 'attacco' ? 'Attacco' : adRaw === 'difesa' ? 'Difesa' : parseStr(arr[C.ad]),
+        lob: normalizeLob(lobVal, parseStr(arr[C.specialist]), parseStr(arr[C.desc]), tipo),
+        lob_originale: lobVal,
+        specialist: parseStr(arr[C.specialist]),
+        mese, durata: parseNum(arr[C.durata]),
+        serv_i_anno: parseNum(arr[C.servIAnno]),
+        canoni: parseNum(arr[C.canoni]),
+        differenziale_servizi: parseNum(arr[C.diffServ]),
+      });
+    }
+
+    // Cancella vecchi record per quell'anno
+    let snap;
+    do {
+      snap = await db.collection('deals').where('anno', '==', String(anno)).limit(400).get();
+      if (snap.empty) break;
+      const batch = db.batch();
+      snap.docs.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+      await new Promise(r => setTimeout(r, 100));
+    } while (!snap.empty);
+
+    // Inserisci nuovi record
+    const CHUNK = 100;
+    let inserted = 0;
+    for (let i = 0; i < deals.length; i += CHUNK) {
+      const batch = db.batch();
+      deals.slice(i, i + CHUNK).forEach(deal => {
+        const ref = db.collection('deals').doc();
+        batch.set(ref, { ...deal, created_date: admin.firestore.FieldValue.serverTimestamp() });
+        inserted++;
+      });
+      await batch.commit();
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    await computeAndSaveAggregates(anno);
+    return { success: true, inserted, total: deals.length };
+  }
+);
+
+// ─── aggregateDeals ────────────────────────────────────────────────
 exports.aggregateDeals = onCall(
   { ...FN_CONFIG, timeoutSeconds: 540, memory: '512MiB' },
   async (request) => {
@@ -184,6 +265,81 @@ exports.aggregateDeals = onCall(
   }
 );
 
+// ─── updateDeal ────────────────────────────────────────────────────
+exports.updateDeal = onCall(
+  { ...FN_CONFIG, timeoutSeconds: 60 },
+  async (request) => {
+    if (!request.auth) throw new Error('Non autenticato');
+    const { dealId, fields, anno } = request.data;
+    if (!dealId || !fields) throw new Error('dealId e fields obbligatori');
+
+    await db.collection('deals').doc(dealId).update({
+      ...fields,
+      updated_date: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Ricalcola aggregati per quell'anno
+    if (anno) await computeAndSaveAggregates(anno);
+    return { success: true };
+  }
+);
+
+// ─── deleteDeal ────────────────────────────────────────────────────
+exports.deleteDeal = onCall(
+  { ...FN_CONFIG, timeoutSeconds: 60 },
+  async (request) => {
+    if (!request.auth) throw new Error('Non autenticato');
+    const { dealIds, anno } = request.data;
+    if (!dealIds?.length) throw new Error('dealIds obbligatorio');
+
+    const CHUNK = 400;
+    for (let i = 0; i < dealIds.length; i += CHUNK) {
+      const batch = db.batch();
+      dealIds.slice(i, i + CHUNK).forEach(id => batch.delete(db.collection('deals').doc(id)));
+      await batch.commit();
+    }
+
+    if (anno) await computeAndSaveAggregates(anno);
+    return { success: true, deleted: dealIds.length };
+  }
+);
+
+// ─── createDeal ────────────────────────────────────────────────────
+exports.createDeal = onCall(
+  { ...FN_CONFIG, timeoutSeconds: 60 },
+  async (request) => {
+    if (!request.auth) throw new Error('Non autenticato');
+    const { deal } = request.data;
+    if (!deal) throw new Error('deal obbligatorio');
+
+    const ref = db.collection('deals').doc();
+    await ref.set({
+      ...deal,
+      lob: normalizeLob(deal.lob || '', deal.specialist || '', deal.descrizione || '', deal.tipo || 'CTR'),
+      created_date: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    if (deal.anno) await computeAndSaveAggregates(deal.anno);
+    return { success: true, id: ref.id };
+  }
+);
+
+// ─── listStorageFiles ──────────────────────────────────────────────
+exports.listStorageFiles = onCall(
+  { ...FN_CONFIG, timeoutSeconds: 30 },
+  async (request) => {
+    if (!request.auth) throw new Error('Non autenticato');
+    const bucket = getStorage().bucket();
+    const [files] = await bucket.getFiles({ prefix: 'consuntivi/' });
+    const result = files.map(f => ({
+      name: f.name,
+      size: f.metadata.size,
+      updated: f.metadata.updated,
+    }));
+    return { files: result };
+  }
+);
+
 // ─── deleteChunk ───────────────────────────────────────────────────
 exports.deleteChunk = onCall(
   { ...FN_CONFIG, timeoutSeconds: 540, memory: '256MiB' },
@@ -191,8 +347,7 @@ exports.deleteChunk = onCall(
     if (!request.auth) throw new Error('Non autenticato');
     const { anno } = request.data;
     if (!anno) throw new Error('anno richiesto');
-    let deleted = 0;
-    let snap;
+    let deleted = 0, snap;
     do {
       snap = await db.collection('deals').where('anno', '==', String(anno)).limit(400).get();
       if (snap.empty) break;
@@ -202,7 +357,6 @@ exports.deleteChunk = onCall(
       deleted += snap.docs.length;
       await new Promise(r => setTimeout(r, 100));
     } while (!snap.empty);
-    // Resetta aggregati per questo anno
     await db.collection('aggregati').doc(String(anno)).delete();
     return { success: true, deleted };
   }
@@ -218,9 +372,7 @@ exports.enrichLob = onCall(
     const batch = db.batch();
     snap.docs.forEach(d => {
       const data = d.data();
-      batch.update(d.ref, {
-        lob: normalizeLob(data.lob_originale || data.lob || '', data.specialist || '', data.descrizione || '', data.tipo || 'CTR')
-      });
+      batch.update(d.ref, { lob: normalizeLob(data.lob_originale || data.lob || '', data.specialist || '', data.descrizione || '', data.tipo || 'CTR') });
     });
     await batch.commit();
     return { processed: snap.docs.length, hasMore: snap.docs.length === 500, nextOffset: offset + snap.docs.length };
@@ -246,11 +398,10 @@ exports.importPortafoglioClienti = onCall(
         await new Promise(r => setTimeout(r, 100));
       } while (!snap.empty);
     }
-    const CHUNK = 400;
     let inserted = 0;
-    for (let i = 0; i < records.length; i += CHUNK) {
+    for (let i = 0; i < records.length; i += 400) {
       const batch = db.batch();
-      records.slice(i, i + CHUNK).forEach(record => {
+      records.slice(i, i + 400).forEach(record => {
         const ref = db.collection('portafoglio_clienti').doc();
         batch.set(ref, { ...record, portafoglio_nome: portafoglioNome, created_date: admin.firestore.FieldValue.serverTimestamp() });
         inserted++;
