@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { ref, uploadBytesResumable, listAll, getMetadata } from 'firebase/storage';
+import { ref, uploadBytesResumable, listAll, getMetadata, getDownloadURL } from 'firebase/storage';
 import { collection, getDocs } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { storage, functionsInstance, db } from '@/api/firebaseClient';
@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 
 const callFn = async (name, payload) => {
-  const fn = httpsCallable(functionsInstance, name, { timeout: 900000 }); // 15 minuti
+  const fn = httpsCallable(functionsInstance, name, { timeout: 600000 });
   const res = await fn(payload);
   return res.data;
 };
@@ -27,30 +27,21 @@ const ANNO_COLORS = {
 
 // Parsing naming convention
 function parseFileName(name) {
-  const base = name.split('/').pop().replace(/\.(xlsx|xlsb|xls)$/i, '').toLowerCase();
-
-  // Portafoglio clienti
-  if (base.includes('portafoglio')) {
-    const m = base.match(/(\d{2})(\d{4})/);
-    if (m) return { type: 'portafoglio', mese: parseInt(m[1]), anno: m[2] };
-    return { type: 'portafoglio', mese: null, anno: null };
-  }
-
-  // Naming convention dati: dati2024, dati022026
+  const base = name.split('/').pop().replace('.xlsx', '').toLowerCase();
   if (base.startsWith('dati')) {
     const rest = base.replace('dati', '');
     if (rest === '2024') return { type: 'consuntivo', anno: '2024', mese: null };
     if (rest === '2025') return { type: 'consuntivo', anno: '2025', mese: null };
-    if (rest === '2026') return { type: 'consuntivo', anno: '2026', mese: null };
+    // es. 022026
     const m = rest.match(/^(\d{2})(\d{4})$/);
     if (m) return { type: 'consuntivo', anno: m[2], mese: parseInt(m[1]) };
   }
-
-  // Riconosce l'anno ovunque nel nome del file
-  if (base.includes('2024') || /\b24\b/.test(base)) return { type: 'consuntivo', anno: '2024', mese: null };
-  if (base.includes('2025') || /\b25\b/.test(base)) return { type: 'consuntivo', anno: '2025', mese: null };
-  if (base.includes('2026') || /\b26\b/.test(base)) return { type: 'consuntivo', anno: '2026', mese: null };
-
+  if (base.startsWith('portafoglioclienti')) {
+    const rest = base.replace('portafoglioclienti', '');
+    const m = rest.match(/^(\d{2})(\d{4})$/);
+    if (m) return { type: 'portafoglio', mese: parseInt(m[1]), anno: m[2] };
+    return { type: 'portafoglio', mese: null, anno: null };
+  }
   return { type: 'unknown' };
 }
 
@@ -183,32 +174,141 @@ export default function Import() {
   };
 
   const handleImportConsuntivo = async (anno) => {
-  const path = activeConsuntivi[anno];
-  if (!path) return;
-  setImporting(prev => ({ ...prev, [anno]: true }));
+    const activePath = activeConsuntivi[anno];
+    if (!activePath) { addLog(`✗ Nessun file selezionato per ${anno}`, 'error'); return; }
+    setImporting(prev => ({ ...prev, [anno]: true }));
+    try {
+      // Step 1 — Scarica file da Storage nel browser
+      addLog(`▶ Download file ${anno} da Storage...`);
+      const fileRef = ref(storage, activePath);
+      const url = await getDownloadURL(fileRef);
+      const response = await fetch(url);
+      const arrayBuffer = await response.arrayBuffer();
+      addLog(`✓ File scaricato (${(arrayBuffer.byteLength/1024).toFixed(0)} KB)`, 'success');
 
-  try {
-    // Step 1: Cancella
-    addLog(`▶ Step 1/3: Cancellazione dati ${anno}...`);
-    await callFn('deleteChunk', { anno });
-    addLog(`✓ Dati ${anno} cancellati`, 'success');
+      // Step 2 — Parse Excel nel browser
+      addLog(`▶ Parsing Excel...`);
+      const XLSX = await import('https://cdn.sheetjs.com/xlsx-0.20.1/package/xlsx.mjs');
+      const wb = XLSX.read(arrayBuffer, { type: 'array' });
+      const sheetName = wb.SheetNames.find(n => n.includes(anno)) || wb.SheetNames[0];
+      addLog(`  Sheet: "${sheetName}"`);
+      const ws = wb.Sheets[sheetName];
+      if (ws['!autofilter']) delete ws['!autofilter'];
+      const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: false });
 
-    // Step 2: Import a chunk da Storage (chiamate multiple da 5000 record)
-    addLog(`▶ Step 2/3: Import ${anno} da Storage...`);
-    const data = await callFn('importFromStorage', { storagePath: path, anno });
-    addLog(`✓ ${anno}: ${data.inserted?.toLocaleString('it-IT')} record importati`, 'success');
+      const headerIdx = rawRows.findIndex(row => row.some(c => String(c ?? '').trim() === 'ID SDW'));
+      if (headerIdx === -1) throw new Error('Header "ID SDW" non trovato');
+      const header = rawRows[headerIdx].map(h => String(h ?? '').trim());
+      const dataRows = rawRows.slice(headerIdx + 1);
 
-    // Step 3: Aggregati
-    addLog(`▶ Step 3/3: Calcolo aggregati ${anno}...`);
-    await callFn('aggregateDeals', { anno });
-    addLog(`✓ Aggregati ${anno} aggiornati`, 'success');
+      const findCol = (...names) => header.findIndex(h => h && names.some(n => h.toLowerCase().includes(n.toLowerCase())));
+      const parseNum = v => { if (!v) return 0; const n = parseFloat(String(v).replace(',','.')); return isNaN(n) ? 0 : n; };
+      const parseStr = v => v == null ? '' : String(v).trim();
 
-    await reloadAggregati();
-  } catch (e) {
-    addLog(`✗ Errore: ${e.message}`, 'error');
-  }
-  setImporting(prev => ({ ...prev, [anno]: false }));
-};
+      const C = {
+        id: header.indexOf('ID SDW'),
+        capogruppo: findCol('Ragione Sociale Capogruppo'),
+        rs: header.findIndex(h => h === 'Ragione Sociale'),
+        desc: header.indexOf('Descrizione'),
+        areaRac: findCol('NEW AREA RAC', 'AREA RAC'),
+        rac: header.indexOf('RAC'),
+        ad: findCol('Attacco/Difesa', 'Attacco / Difesa', 'A/D'),
+        lob: findCol('LOB'),
+        specialist: header.indexOf('SPECIALIST'),
+        mese: header.indexOf('Mese'),
+        durata: header.indexOf('Durata'),
+        servIAnno: findCol('serv I anno'),
+        canoni: findCol('Canoni', 'di cui Can'),
+        ar: findCol('A/R'),
+        ut: findCol('di cui UT'),
+        diffServ: findCol('Differenziale Servizi'),
+        totCtr: findCol('tot ctr'),
+        ricIAnno: findCol('ric I anno'),
+        serviziTot: findCol('Servizi Totali'),
+        vendita: header.indexOf('vendita'),
+        portafoglio: findCol('Portafoglio', 'PORTAFOGLIO'),
+        newAreaRac: findCol('NEW AREA RAC'),
+        newArea: header.indexOf('NEW AREA'),
+        areaMng: findCol('AREA MNG'),
+        strutturaSales: findCol('STRUTTURA SALES'),
+      };
+
+      const deals = [];
+      for (const arr of dataRows) {
+        const id = arr[C.id];
+        if (!id || !String(id).startsWith('OP-')) continue;
+        const mese = parseNum(arr[C.mese]);
+        const tipo = mese === 0 ? 'TTV' : 'CTR';
+        const lobRaw = parseStr(arr[C.lob]);
+        const lobVal = lobRaw && !isNaN(Number(lobRaw)) ? '' : lobRaw;
+        const adRaw = parseStr(arr[C.ad]).toLowerCase();
+        deals.push({
+          portafoglio: parseStr(arr[C.portafoglio]) || 'Base',
+          anno, tipo,
+          id_sdw: parseStr(arr[C.id]),
+          ragione_sociale_capogruppo: parseStr(arr[C.capogruppo]),
+          ragione_sociale: parseStr(arr[C.rs]),
+          descrizione: parseStr(arr[C.desc]),
+          area_rac: parseStr(arr[C.areaRac]),
+          rac: parseStr(arr[C.rac]),
+          new_area_rac: parseStr(arr[C.newAreaRac]),
+          new_area: parseStr(arr[C.newArea]),
+          area_mng: parseStr(arr[C.areaMng]),
+          struttura_sales: parseStr(arr[C.strutturaSales]),
+          attacco_difesa: adRaw === 'attacco' ? 'Attacco' : adRaw === 'difesa' ? 'Difesa' : parseStr(arr[C.ad]),
+          lob: lobVal, lob_originale: lobVal,
+          specialist: parseStr(arr[C.specialist]),
+          mese, durata: parseNum(arr[C.durata]),
+          serv_i_anno: parseNum(arr[C.servIAnno]),
+          canoni: parseNum(arr[C.canoni]),
+          ar: parseNum(arr[C.ar]),
+          ut: parseNum(arr[C.ut]),
+          differenziale_servizi: parseNum(arr[C.diffServ]),
+          tot_ctr: parseNum(arr[C.totCtr]),
+          ric_i_anno: parseNum(arr[C.ricIAnno]),
+          servizi_totali: parseNum(arr[C.serviziTot]),
+          vendita: parseNum(arr[C.vendita]),
+        });
+      }
+      addLog(`✓ Parsed ${deals.length.toLocaleString('it-IT')} righe valide`, 'success');
+      if (deals.length === 0) { addLog('⚠ Nessuna riga valida trovata', 'warn'); return; }
+
+      // Step 3 — Cancella vecchi dati
+      addLog(`▶ Cancellazione dati ${anno} esistenti...`);
+      await callFn('deleteChunk', { anno });
+      addLog(`✓ Dati ${anno} cancellati`, 'success');
+
+      // Step 4 — Import a chunk di 50 record
+      const CHUNK = 50;
+      let inserted = 0;
+      for (let i = 0; i < deals.length; i += CHUNK) {
+        const chunk = deals.slice(i, i + CHUNK);
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const data = await callFn('importDealsJSON', { deals: chunk, anno, isLast: false });
+            inserted += data.inserted || 0;
+            break;
+          } catch (e) {
+            if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+          }
+        }
+        if (i % 500 === 0 || i + CHUNK >= deals.length) {
+          addLog(`  ${inserted.toLocaleString('it-IT')} / ${deals.length.toLocaleString('it-IT')} record inseriti...`);
+        }
+        await new Promise(r => setTimeout(r, 80));
+      }
+      addLog(`✓ Import completato: ${inserted.toLocaleString('it-IT')} record`, 'success');
+
+      // Step 5 — Aggregati
+      addLog(`▶ Calcolo aggregati ${anno}...`);
+      await callFn('aggregateDeals', { anno });
+      addLog(`✓ Aggregati ${anno} aggiornati`, 'success');
+      await reloadAggregati();
+    } catch (e) {
+      addLog(`✗ Errore: ${e.message}`, 'error');
+    }
+    setImporting(prev => ({ ...prev, [anno]: false }));
+  };
 
   const handleImportPortafoglio = async () => {
     if (!activePortafoglio) return;
@@ -379,7 +479,7 @@ export default function Import() {
                     <label className={`flex items-center justify-center gap-2 w-full py-2 rounded-xl border-2 border-dashed text-xs font-medium cursor-pointer transition-all ${c.border} ${c.text} hover:${c.bg}`}>
                       <Upload className="w-3.5 h-3.5" />
                       Carica nuovo file ({anno})
-                      <input type="file" accept=".xlsx,.xlsb,.xls" className="hidden"
+                      <input type="file" accept=".xlsx" className="hidden"
                         onChange={e => handleUpload('consuntivi', e.target.files[0], anno)}
                         disabled={uploading[anno] || isImporting} />
                     </label>
