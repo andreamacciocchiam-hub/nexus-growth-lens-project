@@ -1,212 +1,468 @@
-import { useState, useRef } from 'react';
-import { useImport } from '@/lib/ImportContext';
+import { useState, useEffect, useRef } from 'react';
+import { ref, uploadBytesResumable, listAll, getMetadata, deleteObject } from 'firebase/storage';
+import { httpsCallable } from 'firebase/functions';
+import { storage, functionsInstance } from '@/api/firebaseClient';
+import { useData } from '@/lib/DataContext.jsx';
 import {
-  Upload, CheckCircle, AlertCircle, Loader2, X,
-  Trash2, Clock, FileSpreadsheet, ChevronDown, ChevronUp
+  Cloud, Upload, Play, Trash2, RefreshCw, CheckCircle,
+  AlertCircle, Loader2, FileSpreadsheet, Database,
+  TrendingUp, BarChart2, Clock, HardDrive, Zap, X
 } from 'lucide-react';
-import DeleteDataModal from '../components/bi/DeleteDataModal';
-import ImportPortafoglioButton from '../components/bi/ImportPortafoglioButton';
-import DataStatusPanel from '../components/bi/DataStatusPanel';
 
-const ANNI = [
-  { anno: '2024', label: '2024', color: 'gray', hint: 'storico' },
-  { anno: '2025', label: '2025', color: 'amber', hint: 'consolidato' },
-  { anno: '2026', label: '2026', color: 'blue', hint: 'corrente', requiresDate: true },
-];
-
-const COLOR_MAP = {
-  gray:  { badge: 'bg-gray-100 text-gray-700', btn: 'bg-gray-600 hover:bg-gray-700', border: 'border-l-gray-400', dot: 'bg-gray-400' },
-  amber: { badge: 'bg-amber-100 text-amber-700', btn: 'bg-amber-500 hover:bg-amber-600', border: 'border-l-amber-400', dot: 'bg-amber-400' },
-  blue:  { badge: 'bg-blue-100 text-blue-700', btn: 'bg-blue-600 hover:bg-blue-700', border: 'border-l-blue-500', dot: 'bg-blue-500' },
+const callFn = async (name, payload) => {
+  const fn = httpsCallable(functionsInstance, name, { timeout: 600000 });
+  const res = await fn(payload);
+  return res.data;
 };
 
-function ImportCard({ anno, label, color, hint, requiresDate, onStart, isRunning }) {
-  const [file, setFile] = useState(null);
-  const [dataRiferimento, setDataRiferimento] = useState('');
+const ANNI = ['2024', '2025', '2026'];
+
+const ANNO_COLORS = {
+  '2024': { bg: 'bg-gray-100', text: 'text-gray-700', border: 'border-gray-300', accent: 'bg-gray-500', light: 'bg-gray-50' },
+  '2025': { bg: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-300', accent: 'bg-amber-500', light: 'bg-amber-50' },
+  '2026': { bg: 'bg-blue-100', text: 'text-blue-700', border: 'border-blue-300', accent: 'bg-blue-600', light: 'bg-blue-50' },
+};
+
+function formatSize(bytes) {
+  if (!bytes) return '—';
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(0)} KB`;
+  return `${bytes} B`;
+}
+
+function formatDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function fmt(v) {
+  if (!v) return '€0';
+  if (Math.abs(v) >= 1_000_000) return `€${(v/1_000_000).toFixed(2)}M`;
+  if (Math.abs(v) >= 1_000) return `€${(v/1_000).toFixed(0)}K`;
+  return `€${Math.round(v)}`;
+}
+
+// ─── Log line component ────────────────────────────────────────────
+function LogLine({ entry }) {
+  const cfg = {
+    success: { icon: <CheckCircle className="w-3 h-3 text-green-400 flex-shrink-0" />, text: 'text-green-300' },
+    error:   { icon: <AlertCircle className="w-3 h-3 text-red-400 flex-shrink-0" />,   text: 'text-red-300' },
+    warn:    { icon: <AlertCircle className="w-3 h-3 text-amber-400 flex-shrink-0" />, text: 'text-amber-300' },
+    info:    { icon: <Clock className="w-3 h-3 text-gray-500 flex-shrink-0" />,        text: 'text-gray-300' },
+  }[entry.type] || { icon: <Clock className="w-3 h-3 text-gray-500 flex-shrink-0" />, text: 'text-gray-300' };
+  return (
+    <div className="flex items-start gap-2 font-mono text-[11px] leading-relaxed">
+      {cfg.icon}
+      <span className="text-gray-500 flex-shrink-0">{entry.time}</span>
+      <span className={cfg.text}>{entry.msg}</span>
+    </div>
+  );
+}
+
+// ─── Anno Card ────────────────────────────────────────────────────
+function AnnoCard({ anno, fileInfo, aggInfo, onUpload, onImport, onDelete, importing, uploading, uploadProgress }) {
+  const c = ANNO_COLORS[anno];
   const fileRef = useRef();
-  const c = COLOR_MAP[color];
+  const hasFile = !!fileInfo;
+  const hasData = aggInfo?.kpi?.n > 0;
 
   return (
-    <div className={`bg-white rounded-2xl border border-gray-100 border-l-4 ${c.border} shadow-sm p-5 space-y-3 ${isRunning ? 'ring-2 ring-blue-200' : ''}`}>
-      <div className="flex items-center gap-2">
-        <div className={`w-2 h-2 rounded-full ${c.dot}`} />
-        <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${c.badge}`}>{label}</span>
-        <span className="text-xs text-gray-400">{hint}</span>
-        {isRunning && <Loader2 className="w-3 h-3 text-blue-500 animate-spin ml-auto" />}
+    <div className={`rounded-2xl border-2 ${hasFile ? c.border : 'border-gray-200'} bg-white overflow-hidden transition-all duration-300`}>
+
+      {/* Header */}
+      <div className={`px-5 py-4 ${hasFile ? c.light : 'bg-gray-50'} border-b ${hasFile ? c.border : 'border-gray-200'}`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className={`text-2xl font-black ${c.text}`}>{anno}</span>
+            <div className="flex flex-col">
+              {hasFile ? (
+                <span className="flex items-center gap-1 text-xs font-semibold text-green-600">
+                  <CheckCircle className="w-3 h-3" /> File su Storage
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-xs font-semibold text-gray-400">
+                  <Cloud className="w-3 h-3" /> Nessun file
+                </span>
+              )}
+              {hasData && <span className="text-[10px] text-gray-400">{aggInfo.kpi.n.toLocaleString('it-IT')} deal in DB</span>}
+            </div>
+          </div>
+          {hasData && (
+            <div className="text-right">
+              <p className="text-sm font-black text-gray-800">{fmt(aggInfo.kpi.serv)}</p>
+              <p className="text-[10px] text-gray-400">portafoglio</p>
+            </div>
+          )}
+        </div>
       </div>
 
-      {requiresDate && (
-        <div>
-          <label className="text-xs text-gray-500 font-medium block mb-1">Data riferimento *</label>
-          <input type="date" value={dataRiferimento} onChange={e => setDataRiferimento(e.target.value)}
-            className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-300" />
+      {/* File info */}
+      {hasFile && (
+        <div className="px-5 py-3 bg-white border-b border-gray-100">
+          <div className="flex items-center gap-2">
+            <FileSpreadsheet className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+            <span className="text-xs text-gray-600 truncate flex-1">{fileInfo.name.replace(`consuntivi/`, '')}</span>
+          </div>
+          <div className="flex gap-4 mt-1">
+            <span className="text-[10px] text-gray-400 flex items-center gap-1"><HardDrive className="w-2.5 h-2.5" />{formatSize(fileInfo.size)}</span>
+            <span className="text-[10px] text-gray-400 flex items-center gap-1"><Clock className="w-2.5 h-2.5" />{formatDate(fileInfo.updated)}</span>
+          </div>
         </div>
       )}
 
-      <div onClick={() => fileRef.current.click()}
-        className={`border-2 border-dashed rounded-xl px-4 py-4 text-center cursor-pointer transition-all ${
-          file ? 'border-green-400 bg-green-50' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'}`}>
-        <input ref={fileRef} type="file" accept=".xlsx" className="hidden" onChange={e => setFile(e.target.files[0])} />
-        <FileSpreadsheet className={`w-5 h-5 mx-auto mb-1 ${file ? 'text-green-500' : 'text-gray-300'}`} />
-        <p className={`text-xs font-medium truncate ${file ? 'text-green-700' : 'text-gray-400'}`}>
-          {file ? file.name : 'Seleziona file .xlsx'}
-        </p>
-        {file && <p className="text-[10px] text-gray-400 mt-0.5">{(file.size / 1024).toFixed(0)} KB</p>}
-      </div>
+      {/* KPI aggregati */}
+      {hasData && (
+        <div className="px-5 py-3 grid grid-cols-3 gap-2 border-b border-gray-100">
+          <div className="text-center">
+            <p className="text-xs font-bold text-gray-800">{aggInfo.kpi.ctr}</p>
+            <p className="text-[10px] text-gray-400">CTR</p>
+          </div>
+          <div className="text-center">
+            <p className="text-xs font-bold text-gray-800">{fmt(aggInfo.kpi.canoni)}</p>
+            <p className="text-[10px] text-gray-400">Canoni</p>
+          </div>
+          <div className="text-center">
+            <p className={`text-xs font-bold ${(aggInfo.kpi.diff||0)>=0?'text-green-600':'text-red-500'}`}>{fmt(aggInfo.kpi.diff)}</p>
+            <p className="text-[10px] text-gray-400">Diff.</p>
+          </div>
+        </div>
+      )}
 
-      <button
-        onClick={() => { if (file && (!requiresDate || dataRiferimento)) onStart({ anno, label, file, dataRiferimento: requiresDate ? dataRiferimento : null }); }}
-        disabled={!file || (requiresDate && !dataRiferimento) || isRunning}
-        className={`w-full py-2.5 text-white text-sm font-semibold rounded-xl disabled:opacity-40 transition-colors flex items-center justify-center gap-2 ${c.btn}`}
-      >
-        <Upload className="w-4 h-4" /> {isRunning ? 'Import in corso...' : `Importa ${label}`}
-      </button>
+      {/* Upload progress */}
+      {uploading && (
+        <div className="px-5 py-3 border-b border-gray-100">
+          <div className="flex items-center justify-between text-xs mb-1">
+            <span className="text-gray-500">Upload in corso...</span>
+            <span className="font-semibold text-blue-600">{uploadProgress}%</span>
+          </div>
+          <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+            <div className="h-1.5 bg-blue-500 rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
+          </div>
+        </div>
+      )}
+
+      {/* Azioni */}
+      <div className="px-5 py-4 space-y-2">
+        {/* Upload */}
+        <label className={`flex items-center justify-center gap-2 w-full py-2 rounded-xl border-2 border-dashed text-sm font-medium cursor-pointer transition-all ${
+          uploading ? 'opacity-50 cursor-not-allowed' : `${c.border} ${c.text} hover:${c.bg}`
+        }`}>
+          <Upload className="w-4 h-4" />
+          {hasFile ? 'Sostituisci file Excel' : 'Carica file Excel su Storage'}
+          <input ref={fileRef} type="file" accept=".xlsx" className="hidden"
+            onChange={e => onUpload(anno, e.target.files[0])}
+            disabled={uploading || importing} />
+        </label>
+
+        {/* Import da Storage */}
+        {hasFile && (
+          <button onClick={() => onImport(anno)} disabled={importing || uploading}
+            className={`flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-sm font-bold text-white transition-all ${
+              importing ? 'bg-gray-400' : `${c.accent} hover:opacity-90`
+            } disabled:opacity-50`}>
+            {importing
+              ? <><Loader2 className="w-4 h-4 animate-spin" />Import in corso...</>
+              : <><Play className="w-4 h-4" />Reimporta {anno} da Storage</>}
+          </button>
+        )}
+
+        {/* Cancella dati */}
+        {hasData && !importing && (
+          <button onClick={() => onDelete(anno)}
+            className="flex items-center justify-center gap-2 w-full py-2 rounded-xl text-xs font-medium text-red-500 border border-red-200 hover:bg-red-50 transition-colors">
+            <Trash2 className="w-3.5 h-3.5" /> Cancella dati {anno}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
-function SessionHistory({ sessions, onClear }) {
-  const [expanded, setExpanded] = useState(true);
-  if (!sessions?.length) return null;
-  return (
-    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-      <button onClick={() => setExpanded(v => !v)}
-        className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 transition-colors">
-        <div className="flex items-center gap-2">
-          <Clock className="w-4 h-4 text-gray-400" />
-          <span className="text-sm font-bold text-gray-800">Storico Caricamenti</span>
-          <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">{sessions.length} import</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={e => { e.stopPropagation(); onClear(); }}
-            className="text-xs text-red-400 hover:text-red-600 px-2 py-0.5 rounded-lg hover:bg-red-50">Svuota</button>
-          {expanded ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
-        </div>
-      </button>
-      {expanded && (
-        <div className="px-5 pb-4 space-y-2">
-          {sessions.map((s, i) => {
-            const pct = s.total ? Math.round((s.inserted / s.total) * 100) : null;
-            const isToday = new Date(s.date).toDateString() === new Date().toDateString();
-            return (
-              <div key={i} className="flex items-center justify-between py-3 px-4 rounded-xl border bg-gray-50 border-gray-100">
-                <div className="flex items-center gap-3">
-                  <div className="w-2.5 h-2.5 rounded-full flex-shrink-0 bg-green-500" />
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="text-sm font-semibold text-gray-800">Anno {s.anno}</p>
-                      {s.dataRiferimento && <span className="text-xs bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded-md">Rif. {s.dataRiferimento}</span>}
-                      {isToday && <span className="text-[10px] bg-green-50 text-green-600 px-1.5 py-0.5 rounded-md">oggi</span>}
-                    </div>
-                    <p className="text-xs text-gray-400 mt-0.5 truncate max-w-xs">{s.fileName} · {(s.fileSize / 1024).toFixed(0)} KB</p>
-                  </div>
-                </div>
-                <div className="text-right flex-shrink-0 ml-4">
-                  <p className="text-sm font-bold text-gray-800">
-                    {s.inserted?.toLocaleString('it-IT')}{s.total ? `/${s.total.toLocaleString('it-IT')}` : ''} righe
-                  </p>
-                  {pct !== null && (
-                    <div className="mt-1">
-                      <div className="h-1.5 w-24 bg-gray-200 rounded-full overflow-hidden">
-                        <div className="h-1.5 bg-green-500 rounded-full" style={{ width: `${pct}%` }} />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-const STORAGE_KEY = 'import_sessions_log';
-function loadStoredSessions() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); } catch { return []; }
-}
-
+// ─── MAIN ─────────────────────────────────────────────────────────
 export default function Import() {
-  const { importStatus, startImport, clearStatus } = useImport();
-  const [sessions, setSessions] = useState(loadStoredSessions);
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [statusRefresh, setStatusRefresh] = useState(0);
+  const { aggregati, reload: reloadAggregati } = useData();
+  const [storageFiles, setStorageFiles] = useState({});
+  const [loadingStorage, setLoadingStorage] = useState(true);
+  const [uploading, setUploading] = useState({});
+  const [uploadProgress, setUploadProgress] = useState({});
+  const [importing, setImporting] = useState({});
+  const [aggregating, setAggregating] = useState(false);
+  const [logs, setLogs] = useState([]);
+  const [showLog, setShowLog] = useState(false);
+  const logRef = useRef();
 
-  const handleStart = (task) => startImport(task);
+  useEffect(() => { loadStorage(); }, []);
+  useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [logs]);
 
-  const clearHistory = () => {
-    setSessions([]);
-    localStorage.removeItem(STORAGE_KEY);
+  const addLog = (msg, type = 'info') => {
+    const time = new Date().toLocaleTimeString('it-IT');
+    setLogs(prev => [...prev, { msg, type, time }]);
+    setShowLog(true);
   };
 
-  // Aggiorna storico quando un import finisce
-  const isRunning = importStatus?.state === 'running';
+  const loadStorage = async () => {
+    setLoadingStorage(true);
+    try {
+      const storageRef = ref(storage, 'consuntivi/');
+      const list = await listAll(storageRef);
+      const map = {};
+      for (const item of list.items) {
+        const anno = ANNI.find(a => item.name.includes(a));
+        if (anno) {
+          const meta = await getMetadata(item);
+          map[anno] = { name: item.fullPath, path: item.fullPath, size: meta.size, updated: meta.updated };
+        }
+      }
+      setStorageFiles(map);
+    } catch (e) {
+      addLog('Errore caricamento lista Storage: ' + e.message, 'error');
+    }
+    setLoadingStorage(false);
+  };
+
+  const handleUpload = (anno, file) => {
+    if (!file) return;
+    setUploading(prev => ({ ...prev, [anno]: true }));
+    setUploadProgress(prev => ({ ...prev, [anno]: 0 }));
+    addLog(`▶ Upload ${anno}: ${file.name} (${(file.size/1024).toFixed(0)} KB)`);
+
+    const storageRef = ref(storage, `consuntivi/consuntivo_${anno}.xlsx`);
+    const task = uploadBytesResumable(storageRef, file);
+
+    task.on('state_changed',
+      (snap) => {
+        const pct = Math.round(snap.bytesTransferred / snap.totalBytes * 100);
+        setUploadProgress(prev => ({ ...prev, [anno]: pct }));
+      },
+      (err) => {
+        addLog(`✗ Upload fallito: ${err.message}`, 'error');
+        setUploading(prev => ({ ...prev, [anno]: false }));
+      },
+      () => {
+        addLog(`✓ File ${anno} caricato su Storage`, 'success');
+        setUploading(prev => ({ ...prev, [anno]: false }));
+        loadStorage();
+      }
+    );
+  };
+
+  const handleImport = async (anno) => {
+    const file = storageFiles[anno];
+    if (!file) return;
+    setImporting(prev => ({ ...prev, [anno]: true }));
+    addLog(`▶ Avvio import ${anno} da Storage...`);
+    addLog(`  File: ${file.name}`);
+    addLog(`  Cancellazione dati esistenti...`);
+
+    try {
+      const data = await callFn('importFromStorage', { storagePath: file.path, anno });
+      addLog(`✓ Import ${anno} completato: ${data.inserted?.toLocaleString('it-IT')} record`, 'success');
+      addLog(`✓ Aggregati ${anno} ricalcolati`, 'success');
+      await reloadAggregati();
+    } catch (e) {
+      addLog(`✗ Import ${anno} fallito: ${e.message}`, 'error');
+    }
+    setImporting(prev => ({ ...prev, [anno]: false }));
+  };
+
+  const handleDelete = async (anno) => {
+    if (!confirm(`Cancellare tutti i dati ${anno}? Questa operazione non è reversibile.`)) return;
+    addLog(`▶ Cancellazione dati ${anno}...`);
+    try {
+      await callFn('deleteChunk', { anno });
+      addLog(`✓ Dati ${anno} cancellati`, 'success');
+      await reloadAggregati();
+    } catch (e) {
+      addLog(`✗ Errore cancellazione: ${e.message}`, 'error');
+    }
+  };
+
+  const handleAggregateAll = async () => {
+    setAggregating(true);
+    addLog('▶ Ricalcolo aggregati per tutti gli anni...');
+    try {
+      const data = await callFn('aggregateDeals', {});
+      data.results?.forEach(r => addLog(`✓ Aggregati ${r.anno}: ${r.n?.toLocaleString('it-IT')} record`, 'success'));
+      await reloadAggregati();
+    } catch (e) {
+      addLog('✗ Errore aggregazione: ' + e.message, 'error');
+    }
+    setAggregating(false);
+  };
+
+  // Statistiche globali
+  const totDeals = ANNI.reduce((s, a) => s + (aggregati?.[a]?.kpi?.n || 0), 0);
+  const totServ = ANNI.reduce((s, a) => s + (aggregati?.[a]?.kpi?.serv || 0), 0);
+  const lastUpdate = ANNI.map(a => aggregati?.[a]?.updatedAt?.toDate?.() || null).filter(Boolean).sort().pop();
 
   return (
-    <div className="min-h-full bg-gray-50 p-6 space-y-6 pb-16">
+    <div className="min-h-full bg-gray-50 p-6 space-y-6">
+
+      {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-black text-gray-900 tracking-tight">Gestione Dati</h1>
-          <p className="text-sm text-gray-400 mt-0.5">Importazione consuntivi Excel & portafoglio clienti</p>
+          <p className="text-sm text-gray-400 mt-0.5">Storage · Import · Analisi · Aggregazione</p>
         </div>
-        <button onClick={() => setShowDeleteModal(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-red-50 text-red-600 text-sm font-semibold rounded-xl border border-red-100 hover:bg-red-100 transition-colors">
-          <Trash2 className="w-4 h-4" /> Cancella Dati
-        </button>
+        <div className="flex gap-2">
+          <button onClick={loadStorage} disabled={loadingStorage}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 text-gray-600">
+            <RefreshCw className={`w-3.5 h-3.5 ${loadingStorage ? 'animate-spin' : ''}`} />
+            Aggiorna Storage
+          </button>
+          <button onClick={handleAggregateAll} disabled={aggregating}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-40">
+            {aggregating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+            {aggregating ? 'Aggregazione...' : 'Ricalcola tutti aggregati'}
+          </button>
+        </div>
       </div>
 
-      <DataStatusPanel refreshTrigger={statusRefresh} />
-
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 flex items-center justify-between">
-        <div>
-          <h2 className="text-sm font-bold text-gray-800">Portafoglio Clienti</h2>
-          <p className="text-xs text-gray-400 mt-0.5">Anagrafica clienti per arricchimento deals</p>
-        </div>
-        <ImportPortafoglioButton onImported={() => {}} />
-      </div>
-
-      {/* Status import globale (se in corso) */}
-      {importStatus && (
-        <div className={`rounded-2xl border p-4 flex items-center gap-3 ${
-          importStatus.state === 'running' ? 'bg-blue-50 border-blue-200' :
-          importStatus.state === 'done'    ? 'bg-green-50 border-green-200' :
-                                             'bg-red-50 border-red-200'}`}>
-          {importStatus.state === 'running' && <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />}
-          {importStatus.state === 'done'    && <CheckCircle className="w-5 h-5 text-green-500" />}
-          {importStatus.state === 'error'   && <AlertCircle className="w-5 h-5 text-red-500" />}
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-gray-800">
-              Import Anno {importStatus.anno} — {importStatus.state === 'running' ? 'in corso' : importStatus.state === 'done' ? 'completato' : 'errore'}
-            </p>
-            <p className="text-xs text-gray-500">{importStatus.lastLog}</p>
+      {/* Stats globali */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {[
+          { label: 'Deal totali in DB', value: totDeals.toLocaleString('it-IT'), icon: Database, color: 'text-blue-600' },
+          { label: 'Portafoglio totale', value: fmt(totServ), icon: TrendingUp, color: 'text-green-600' },
+          { label: 'File su Storage', value: `${Object.keys(storageFiles).length} / 3`, icon: Cloud, color: 'text-purple-600' },
+          { label: 'Ultimo aggiornamento', value: lastUpdate ? lastUpdate.toLocaleDateString('it-IT') : '—', icon: Clock, color: 'text-gray-500' },
+        ].map((s, i) => (
+          <div key={i} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <s.icon className={`w-4 h-4 ${s.color}`} />
+              <span className="text-xs text-gray-500">{s.label}</span>
+            </div>
+            <p className={`text-xl font-black ${s.color}`}>{s.value}</p>
           </div>
-          {importStatus.state !== 'running' && (
-            <button onClick={clearStatus}><X className="w-4 h-4 text-gray-400 hover:text-gray-600" /></button>
-          )}
-        </div>
-      )}
+        ))}
+      </div>
 
+      {/* Anno cards */}
       <div>
         <h2 className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
-          <FileSpreadsheet className="w-4 h-4 text-blue-500" />
-          Importa Consuntivi per Anno
+          <BarChart2 className="w-4 h-4 text-blue-500" />
+          Storage & Dati per Anno
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {ANNI.map(a => (
-            <ImportCard key={a.anno} {...a}
-              isRunning={isRunning && importStatus?.anno === a.anno}
-              onStart={handleStart} />
+          {ANNI.map(anno => (
+            <AnnoCard
+              key={anno}
+              anno={anno}
+              fileInfo={storageFiles[anno]}
+              aggInfo={aggregati?.[anno]}
+              onUpload={handleUpload}
+              onImport={handleImport}
+              onDelete={handleDelete}
+              importing={importing[anno]}
+              uploading={uploading[anno]}
+              uploadProgress={uploadProgress[anno] || 0}
+            />
           ))}
         </div>
       </div>
 
-      <SessionHistory sessions={sessions} onClear={clearHistory} />
+      {/* Tabella comparativa */}
+      {ANNI.some(a => aggregati?.[a]?.kpi?.n > 0) && (
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+          <h2 className="text-sm font-bold text-gray-700 mb-4 flex items-center gap-2">
+            <BarChart2 className="w-4 h-4 text-blue-500" />
+            Analisi Comparativa Dati Caricati
+          </h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b-2 border-gray-100 text-gray-400">
+                  <th className="text-left pb-3 font-semibold">Anno</th>
+                  <th className="text-right pb-3 font-semibold">Deal totali</th>
+                  <th className="text-right pb-3 font-semibold">Portafoglio</th>
+                  <th className="text-right pb-3 font-semibold">Canoni</th>
+                  <th className="text-right pb-3 font-semibold">Differenziale</th>
+                  <th className="text-right pb-3 font-semibold">CTR</th>
+                  <th className="text-right pb-3 font-semibold">TTV</th>
+                  <th className="text-right pb-3 font-semibold">Attacco</th>
+                  <th className="text-right pb-3 font-semibold">Difesa</th>
+                  <th className="text-center pb-3 font-semibold">Storage</th>
+                  <th className="text-center pb-3 font-semibold">Aggregati</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ANNI.map(anno => {
+                  const ag = aggregati?.[anno];
+                  const c = ANNO_COLORS[anno];
+                  const hasAg = ag?.kpi?.n > 0;
+                  const hasFile = !!storageFiles[anno];
+                  return (
+                    <tr key={anno} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                      <td className="py-3">
+                        <span className={`px-2 py-0.5 rounded-lg text-xs font-black ${c.bg} ${c.text}`}>{anno}</span>
+                      </td>
+                      <td className="py-3 text-right font-semibold text-gray-800">{hasAg ? ag.kpi.n.toLocaleString('it-IT') : '—'}</td>
+                      <td className="py-3 text-right font-semibold text-gray-800">{hasAg ? fmt(ag.kpi.serv) : '—'}</td>
+                      <td className="py-3 text-right text-gray-600">{hasAg ? fmt(ag.kpi.canoni) : '—'}</td>
+                      <td className={`py-3 text-right font-semibold ${hasAg ? (ag.kpi.diff >= 0 ? 'text-green-600' : 'text-red-500') : 'text-gray-300'}`}>
+                        {hasAg ? fmt(ag.kpi.diff) : '—'}
+                      </td>
+                      <td className="py-3 text-right text-gray-600">{hasAg ? ag.kpi.ctr : '—'}</td>
+                      <td className="py-3 text-right text-gray-600">{hasAg ? ag.kpi.ttv : '—'}</td>
+                      <td className="py-3 text-right text-gray-600">{hasAg ? fmt(ag.kpi.att) : '—'}</td>
+                      <td className="py-3 text-right text-gray-600">{hasAg ? fmt(ag.kpi.dif) : '—'}</td>
+                      <td className="py-3 text-center">
+                        {hasFile
+                          ? <span className="flex items-center justify-center gap-1 text-green-600 text-[10px] font-semibold"><CheckCircle className="w-3 h-3" />OK</span>
+                          : <span className="text-gray-300 text-[10px]">—</span>}
+                      </td>
+                      <td className="py-3 text-center">
+                        {hasAg
+                          ? <span className="flex items-center justify-center gap-1 text-green-600 text-[10px] font-semibold"><CheckCircle className="w-3 h-3" />OK</span>
+                          : <span className="text-amber-500 text-[10px] font-semibold">Mancanti</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
 
-      {showDeleteModal && (
-        <DeleteDataModal isOpen={showDeleteModal}
-          onClose={() => setShowDeleteModal(false)}
-          onDeleted={() => { setShowDeleteModal(false); setStatusRefresh(v => v + 1); }} />
+          {/* Barre visuali */}
+          <div className="mt-5 space-y-3">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest">Portafoglio per anno</p>
+            {ANNI.map(anno => {
+              const ag = aggregati?.[anno];
+              const serv = ag?.kpi?.serv || 0;
+              const maxServ = Math.max(...ANNI.map(a => aggregati?.[a]?.kpi?.serv || 0), 1);
+              const c = ANNO_COLORS[anno];
+              return (
+                <div key={anno} className="flex items-center gap-3">
+                  <span className={`text-xs font-bold w-10 ${c.text}`}>{anno}</span>
+                  <div className="flex-1 h-5 bg-gray-100 rounded-full overflow-hidden">
+                    <div className={`h-5 rounded-full ${c.accent} flex items-center px-2 transition-all duration-700`}
+                      style={{ width: `${serv/maxServ*100}%`, minWidth: serv > 0 ? '3rem' : 0 }}>
+                      {serv > 0 && <span className="text-white text-[10px] font-bold">{fmt(serv)}</span>}
+                    </div>
+                  </div>
+                  <span className="text-xs text-gray-400 w-16 text-right">{ag?.kpi?.n?.toLocaleString('it-IT') || 0} deal</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Log panel */}
+      {logs.length > 0 && (
+        <div className="bg-gray-950 rounded-2xl border border-gray-800 overflow-hidden shadow-xl">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800 bg-gray-900">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+              <span className="text-sm font-semibold text-white">Log operazioni</span>
+            </div>
+            <button onClick={() => setLogs([])} className="text-gray-500 hover:text-gray-300">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div ref={logRef} className="p-4 h-48 overflow-y-auto space-y-1">
+            {logs.map((l, i) => <LogLine key={i} entry={l} />)}
+          </div>
+        </div>
       )}
     </div>
   );
