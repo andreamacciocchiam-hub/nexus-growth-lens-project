@@ -36,17 +36,8 @@ function normalizeLob(lob, specialist, descrizione, tipo) {
 
 // ─── Aggregazione ──────────────────────────────────────────────────
 async function computeAndSaveAggregates(anno) {
-const deals = [];
-let lastDoc = null;
-while (true) {
-  let q = db.collection('deals').where('anno', '==', String(anno)).limit(500);
-  if (lastDoc) q = q.startAfter(lastDoc);
-  const snap = await q.get();
-  if (snap.empty) break;
-  snap.docs.forEach(d => deals.push(d.data()));
-  if (snap.docs.length < 500) break;
-  lastDoc = snap.docs[snap.docs.length - 1];
-}
+  const snap = await db.collection('deals').where('anno', '==', String(anno)).get();
+  const deals = snap.docs.map(d => d.data());
   const sum = (arr, f) => arr.reduce((s, d) => s + (d[f] || 0), 0);
 
   const kpi = {
@@ -170,8 +161,7 @@ exports.importFromStorage = onCall(
     const wb = XLSX.read(buffer, { type: 'buffer' });
     const sheetName = wb.SheetNames.find(n => n.includes(anno)) || wb.SheetNames[0];
     const ws = wb.Sheets[sheetName];
-    if (ws['!autofilter']) delete ws['!autofilter'];
-    const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: false });
+    const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
 
     const headerIdx = rawRows.findIndex(row => row.some(c => String(c ?? '').trim() === 'ID SDW'));
     if (headerIdx === -1) throw new Error('Header "ID SDW" non trovato');
@@ -261,7 +251,7 @@ exports.importFromStorage = onCall(
 
 // ─── aggregateDeals ────────────────────────────────────────────────
 exports.aggregateDeals = onCall(
-  { ...FN_CONFIG, timeoutSeconds: 540, memory: '1GiB' },
+  { ...FN_CONFIG, timeoutSeconds: 540, memory: '512MiB' },
   async (request) => {
     if (!request.auth) throw new Error('Non autenticato');
     const { anno } = request.data;
@@ -455,27 +445,47 @@ exports.importPortafoglioFromStorage = onCall(
     const str = v => (v != null && String(v).trim() !== '' ? String(v).trim() : null);
 
     const records = rows.map(r => ({
-      cf:                        str(r['CF']),
-      cf_capogruppo:             str(r['CF CAPOGRUPPO']),
-      ragione_sociale:           str(r['RAG_SOC']) || str(r['Capogruppo']) || 'N/D',
-      capogruppo:                str(r['Capogruppo']),
-      vertical_gruppo:           str(r['VERTICAL Gruppo']),
-      segmento_26:               str(r['SEGMENTO CLIENTE 2026']),
-      area_rac:                  str(r['AREA RAC']),
-      rac:                       str(r['RAC']),
-      area_mng:                  str(r['AREA MNG']),
-      struttura_sales:           str(r['STRUTTURA SALES CORE']),
-      area_rac_26:               str(r['AREA RAC 26']),
-      rac_26:                    str(r['RAC 26']),
-      area_mng_26:               str(r['AREA MNG 26']),
-      struttura_sales_26:        str(r['STRUTTURA SALES CORE 26']),
-      // Campi specialist
-      area_am_spec:              str(r['AREA AM SPEC']),
-      area_mng_spec:             str(r['AREA MNG SPEC']),
-      acc_specialist_lss:        str(r['ACC SPECIALIST LSS']),
-      acc_specialist_sec:        str(r['ACC SPECIALIST SEC']),
-      acc_specialist_cloud_iot_5g: str(r['ACC SPECIALIST CLOUD/IoT/5G']),
-      portafoglio_nome:          portafoglio_nome || 'Base',
+      // Identificativi
+      cf:                          str(r['CF']),
+      cf_capogruppo:               str(r['CF CAPOGRUPPO']),
+      piva:                        str(r['PIVA']),
+      ragione_sociale:             str(r['RAG_SOC']) || str(r['Capogruppo']) || 'N/D',
+      capogruppo:                  str(r['Capogruppo']),
+      // Classificazione
+      vertical_gruppo:             str(r['VERTICAL Gruppo']),
+      funzione:                    str(r['FUNZIONE']),
+      resp_funzione:               str(r['RESP FUNZIONE']),
+      segmento_as_is:              str(r['SEGMENTO AS IS']),
+      provenienza_cf:              str(r['PROVENIENZA CF']),
+      // Geo
+      comune:                      str(r['COMUNE']),
+      provincia:                   str(r['PROVINCIA']),
+      regione:                     str(r['REGIONE']),
+      prov_capogruppo:             str(r['PROV_CAPOGRUPPO']),
+      reg_capogruppo:              str(r['REG_CAPOGRUPPO']),
+      // Gestione
+      promotore:                   str(r['PROMOTORE']),
+      master_slave_ps:             str(r['MASTER_SLAVE_PS']),
+      gest_cons:                   str(r['GEST_CONS']),
+      cons_gruppo:                 str(r['CONS_GRUPPO']),
+      // Sales AS-IS
+      area_sales:                  str(r['AREA SALES']),
+      // 2026
+      segmento_26:                 str(r['SEGMENTO CLIENTE 2026']),
+      area_sales_26:               str(r['AREA SALES 26']),
+      resp_sales_26:               str(r['RESP SALES 26']),
+      area_rac_26:                 str(r['AREA RAC 26']),
+      rac_26:                      str(r['RAC 26']),
+      area_am_26:                  str(r['AREA AM 26']),
+      area_mng_26:                 str(r['AREA MNG 26']),
+      struttura_sales_26:          str(r['STRUTTURA SALES CORE 26']),
+      // Specialist
+      area_mng_spec_26:            str(r['AREA MNG SPEC 26']),
+      acc_specialist_lss:          str(r['ACC SPECIALIST LSS 26']),
+      acc_specialist_sec:          str(r['ACC SPECIALIST SEC 26']),
+      acc_specialist_cloud_iot_5g: str(r['ACC SPECIALIST CLOUD/IoT/5G 26']),
+      iot:                         str(r['IoT']),
+      portafoglio_nome:            portafoglio_nome || 'Base',
     })).filter(r => r.ragione_sociale);
 
     // Cancella e reinserisci
