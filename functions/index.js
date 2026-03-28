@@ -3,11 +3,10 @@ const admin = require('firebase-admin');
 admin.initializeApp();
 const db = admin.firestore();
 
-// ✅ Configurazione comune: CORS aperto + invoker pubblico
 const FN_CONFIG = {
   region: 'europe-west1',
-  cors: true,          // ← fix CORS
-  invoker: 'public',   // ← consente chiamate da browser autenticati
+  cors: true,
+  invoker: 'public',
 };
 
 const VALID_LOB = ['Cloud', 'Connettività', 'IoT', 'Other IT', 'Licensing', 'Security'];
@@ -54,7 +53,6 @@ exports.importDealsJSON = onCall(
 
     const CHUNK = 100;
     let inserted = 0;
-
     for (let i = 0; i < normalizedDeals.length; i += CHUNK) {
       const batch = db.batch();
       normalizedDeals.slice(i, i + CHUNK).forEach(deal => {
@@ -65,7 +63,6 @@ exports.importDealsJSON = onCall(
       await batch.commit();
       await new Promise(r => setTimeout(r, 200));
     }
-
     return { success: true, inserted };
   }
 );
@@ -127,85 +124,57 @@ exports.enrichLob = onCall(
   }
 );
 
-// ─── ping ─────────────────────────────────────────────────────────
-exports.ping = onCall(
-  { ...FN_CONFIG },
-  async () => ({ ok: true, ts: Date.now() })
-);
-
 // ─── importPortafoglioClienti ──────────────────────────────────────
+// Riceve record JSON già parsati dal browser (niente xlsx qui)
 exports.importPortafoglioClienti = onCall(
-  { ...FN_CONFIG, timeoutSeconds: 300, memory: '512MiB' },
+  { ...FN_CONFIG, timeoutSeconds: 300, memory: '256MiB' },
   async (request) => {
     if (!request.auth) throw new Error('Non autenticato');
-    const { file_url, portafoglio_nome } = request.data;
-    if (!file_url) throw new Error('file_url mancante');
+    const { records, portafoglio_nome, isFirst } = request.data;
+    if (!Array.isArray(records)) throw new Error('records deve essere un array');
 
     const portafoglioNome = portafoglio_nome || 'Base';
 
-    // 1. Scarica il file Excel da Firebase Storage
-    const fetch = (await import('node-fetch')).default;
-    const resp = await fetch(file_url);
-    const arrayBuffer = await resp.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    // Cancella i vecchi record solo al primo chunk
+    if (isFirst) {
+      let snap;
+      do {
+        snap = await db.collection('portafoglio_clienti')
+          .where('portafoglio_nome', '==', portafoglioNome)
+          .limit(400)
+          .get();
+        if (snap.empty) break;
+        const batch = db.batch();
+        snap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+        await new Promise(r => setTimeout(r, 100));
+      } while (!snap.empty);
+    }
 
-    // 2. Parse Excel con xlsx
-    const XLSX = require('xlsx');
-    const workbook = XLSX.read(buffer, { type: 'buffer' });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
-
-    const str = v => (v != null && String(v).trim() !== '' ? String(v).trim() : null);
-
-    const records = rows.map(r => ({
-      cf:                str(r['CF']),
-      cf_capogruppo:     str(r['CF CAPOGRUPPO']),
-      ragione_sociale:   str(r['RAG_SOC']) || str(r['Capogruppo']) || 'N/D',
-      capogruppo:        str(r['Capogruppo']),
-      vertical_gruppo:   str(r['VERTICAL Gruppo']),
-      segmento_26:       str(r['SEGMENTO CLIENTE 2026']),
-      area_rac:          str(r['AREA RAC']),
-      rac:               str(r['RAC']),
-      area_mng:          str(r['AREA MNG']),
-      struttura_sales:   str(r['STRUTTURA SALES CORE']),
-      area_rac_26:       str(r['AREA RAC 26']),
-      rac_26:            str(r['RAC 26']),
-      area_mng_26:       str(r['AREA MNG 26']),
-      struttura_sales_26: str(r['STRUTTURA SALES CORE 26']),
-      portafoglio_nome:  portafoglioNome,
-    })).filter(r => r.ragione_sociale);
-
-    // 3. Cancella i record esistenti per questo portafoglio
-    let deleted = 0;
-    let snap;
-    do {
-      snap = await db.collection('portafoglio_clienti')
-        .where('portafoglio_nome', '==', portafoglioNome)
-        .limit(400)
-        .get();
-      if (snap.empty) break;
-      const batch = db.batch();
-      snap.docs.forEach(d => batch.delete(d.ref));
-      await batch.commit();
-      deleted += snap.docs.length;
-      await new Promise(r => setTimeout(r, 100));
-    } while (!snap.empty);
-
-    // 4. Inserisci nuovi record
+    // Inserisci nuovi record
     const CHUNK = 400;
     let inserted = 0;
     for (let i = 0; i < records.length; i += CHUNK) {
       const batch = db.batch();
       records.slice(i, i + CHUNK).forEach(record => {
         const ref = db.collection('portafoglio_clienti').doc();
-        batch.set(ref, { ...record, created_date: admin.firestore.FieldValue.serverTimestamp() });
+        batch.set(ref, {
+          ...record,
+          portafoglio_nome: portafoglioNome,
+          created_date: admin.firestore.FieldValue.serverTimestamp()
+        });
         inserted++;
       });
       await batch.commit();
       await new Promise(r => setTimeout(r, 200));
     }
 
-    return { ok: true, inserted, deleted, portafoglio_nome: portafoglioNome };
+    return { ok: true, inserted };
   }
+);
+
+// ─── ping ─────────────────────────────────────────────────────────
+exports.ping = onCall(
+  { ...FN_CONFIG },
+  async () => ({ ok: true, ts: Date.now() })
 );
