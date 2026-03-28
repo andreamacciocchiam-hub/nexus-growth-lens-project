@@ -251,7 +251,7 @@ exports.importFromStorage = onCall(
 
 // ─── aggregateDeals ────────────────────────────────────────────────
 exports.aggregateDeals = onCall(
-  { ...FN_CONFIG, timeoutSeconds: 540, memory: '512MiB' },
+  { ...FN_CONFIG, timeoutSeconds: 540, memory: '1GiB' },
   async (request) => {
     if (!request.auth) throw new Error('Non autenticato');
     const { anno } = request.data;
