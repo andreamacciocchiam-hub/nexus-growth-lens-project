@@ -174,18 +174,32 @@ export default function Import() {
   };
 
   const handleImportConsuntivo = async (anno) => {
-    const path = activeConsuntivi[anno];
-    if (!path) return;
-    setImporting(prev => ({ ...prev, [anno]: true }));
-    addLog(`▶ Import consuntivo ${anno} da Storage...`);
-    try {
-      const data = await callFn('importFromStorage', { storagePath: path, anno });
-      addLog(`✓ ${anno}: ${data.inserted?.toLocaleString('it-IT')} record importati`, 'success');
-      addLog(`✓ Aggregati ${anno} ricalcolati`, 'success');
-      await reloadAggregati();
-    } catch (e) { addLog(`✗ Import ${anno} fallito: ${e.message}`, 'error'); }
-    setImporting(prev => ({ ...prev, [anno]: false }));
-  };
+  const path = activeConsuntivi[anno];
+  if (!path) return;
+  setImporting(prev => ({ ...prev, [anno]: true }));
+
+  try {
+    // Step 1: Cancella
+    addLog(`▶ Step 1/3: Cancellazione dati ${anno}...`);
+    await callFn('deleteChunk', { anno });
+    addLog(`✓ Dati ${anno} cancellati`, 'success');
+
+    // Step 2: Import a chunk da Storage (chiamate multiple da 5000 record)
+    addLog(`▶ Step 2/3: Import ${anno} da Storage...`);
+    const data = await callFn('importFromStorage', { storagePath: path, anno });
+    addLog(`✓ ${anno}: ${data.inserted?.toLocaleString('it-IT')} record importati`, 'success');
+
+    // Step 3: Aggregati
+    addLog(`▶ Step 3/3: Calcolo aggregati ${anno}...`);
+    await callFn('aggregateDeals', { anno });
+    addLog(`✓ Aggregati ${anno} aggiornati`, 'success');
+
+    await reloadAggregati();
+  } catch (e) {
+    addLog(`✗ Errore: ${e.message}`, 'error');
+  }
+  setImporting(prev => ({ ...prev, [anno]: false }));
+};
 
   const handleImportPortafoglio = async () => {
     if (!activePortafoglio) return;
