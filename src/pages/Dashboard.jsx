@@ -36,6 +36,7 @@ const EMPTY = {
   specialist_cloud:'', iot:''
 };
 const ANAGRAFICA_KEYS = ['rac_26','area_am_26','area_mng_26','struttura_sales_26','area_mng_spec_26','specialist_lss','specialist_sec','specialist_cloud','iot'];
+const NEEDS_RAW_KEYS = [...ANAGRAFICA_KEYS, 'tipo'];
 
 function computeKPI(deals) {
   if (!deals.length) return { serv:0, canoni:0, diff:0, att:0, dif:0, n:0, ctr:0, ttv:0 };
@@ -214,7 +215,26 @@ export default function Dashboard() {
   const [aggregating, setAggregating] = useState(false);
 
   const hasAnyFilter = Object.values(filters).some(Boolean);
-  const hasAnagraficaFilter = ANAGRAFICA_KEYS.some(k => filters[k]);
+
+  // Scope indicator — mostra il livello di analisi attivo
+  const scopeLevel = useMemo(() => {
+    const f = filters;
+    if (!hasAnyFilter) return { level: 'Azienda', label: 'Totale Aziendale', color: 'bg-gray-100 text-gray-600' };
+    if (f.specialist_lss || f.specialist_sec || f.specialist_cloud || f.iot) {
+      const spec = f.specialist_lss || f.specialist_sec || f.specialist_cloud || f.iot;
+      return { level: 'Specialist', label: `Specialist: ${spec}`, color: 'bg-purple-100 text-purple-700' };
+    }
+    if (f.rac_26) return { level: 'RAC', label: `RAC: ${f.rac_26}`, color: 'bg-indigo-100 text-indigo-700' };
+    if (f.struttura_sales_26) return { level: 'Sales Core', label: `Sales Core: ${f.struttura_sales_26}`, color: 'bg-blue-100 text-blue-700' };
+    if (f.area_mng_spec_26) return { level: 'MNG Spec', label: `Area MNG Spec: ${f.area_mng_spec_26}`, color: 'bg-cyan-100 text-cyan-700' };
+    if (f.area_mng_26 || f.area_am_26) return { level: 'MNG/AM', label: f.area_mng_26 || f.area_am_26, color: 'bg-teal-100 text-teal-700' };
+    if (f.lob) return { level: 'LOB', label: `LOB: ${f.lob}`, color: 'bg-orange-100 text-orange-700' };
+    if (f.tipo) return { level: 'Tipologia', label: f.tipo, color: 'bg-teal-100 text-teal-700' };
+    if (f.area_rac) return { level: 'Area RAC', label: `Area: ${f.area_rac}`, color: 'bg-blue-100 text-blue-700' };
+    if (f.anno) return { level: 'Anno', label: `Anno ${f.anno}`, color: 'bg-gray-100 text-gray-600' };
+    return { level: 'Filtrato', label: 'Filtri attivi', color: 'bg-gray-100 text-gray-600' };
+  }, [filters, hasAnyFilter]);
+  const hasAnagraficaFilter = NEEDS_RAW_KEYS.some(k => filters[k]);
 
   const onChange = (key, val) => setFilters(prev => ({ ...prev, [key]: val }));
   const onReset = () => setFilters(EMPTY);
@@ -260,7 +280,10 @@ export default function Dashboard() {
         byArea: null,
       };
     }
-    if (!allReady && hasAnagraficaFilter) return null; // aspetta raw deals
+    if (!allReady && hasAnagraficaFilter) {
+      // Se abbiamo già alcuni anni caricati, usa quelli parziali
+      if (Object.values(dealsReady).every(v => !v)) return null;
+    }
 
     // Calcola da raw deals
     const byAnno = {};
@@ -381,16 +404,20 @@ export default function Dashboard() {
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-black text-gray-900 tracking-tight">Business Intelligence</h1>
-            <p className="text-sm text-gray-400 mt-0.5 flex items-center gap-2">
-              Portafoglio 2024 · 2025 · 2026
-              {kpiData?.source==='raw' && <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-semibold">Raw · {filteredDeals.length.toLocaleString('it-IT')} deal</span>}
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${scopeLevel.color}`}>
+                {scopeLevel.label}
+              </span>
+              {hasAnyFilter && kpiData?.source==='raw' && (
+                <span className="text-xs text-gray-400">{filteredDeals.length.toLocaleString('it-IT')} deal · calcolato su raw</span>
+              )}
               {!allReady && (
                 <span className="text-xs text-gray-400 flex items-center gap-1">
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  {ANNI.map(a => !dealsReady[a] && dealsLoading[a] ? `${a}: ${(dealsProgress[a]||0).toLocaleString('it-IT')}...` : null).filter(Boolean).join(' ')}
+                  <Loader2 className="w-3 h-3 animate-spin text-blue-400" />
+                  {ANNI.filter(a => dealsLoading[a]).map(a => `${a}: ${(dealsProgress[a]||0).toLocaleString('it-IT')}`).join(' · ')}
                 </span>
               )}
-            </p>
+            </div>
           </div>
           <div className="flex gap-2">
             {hasAnyFilter && (
@@ -418,19 +445,10 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Avviso raw not ready */}
-        {hasAnagraficaFilter && !allReady && (
-          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center gap-3">
-            <Loader2 className="w-5 h-5 animate-spin text-amber-500 flex-shrink-0" />
-            <div>
-              <p className="text-sm font-semibold text-amber-700">Caricamento dati in corso...</p>
-              <p className="text-xs text-amber-500">I KPI si aggiorneranno appena i dati raw sono pronti</p>
-            </div>
-          </div>
-        )}
+
 
         {/* KPI Hero */}
-        {ag26 && (
+        {(ag26 || (hasAnagraficaFilter && !allReady)) && (
           <div className="bg-gradient-to-r from-gray-900 to-gray-800 rounded-2xl p-5 text-white shadow-lg">
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 divide-x divide-white/10">
               <InlineKPI label="Portafoglio 2026" value={fmt(ag26?.serv)} delta={delta2625} color="blue" />
