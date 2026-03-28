@@ -1,13 +1,20 @@
-import { useState, useEffect, useMemo } from 'react';
-import { collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { collection, query, where, limit, getDocs, startAfter } from 'firebase/firestore';
 import { db } from '@/api/firebaseClient';
-import { Search, ChevronDown, ChevronUp, X, Trash2, Loader2 } from 'lucide-react';
-import DealsFilters, { EMPTY_FILTERS, applyFilters } from '../components/bi/DealsFilters';
-import PortafoglioFilters, { EMPTY_PTF_FILTERS, applyPortafoglioFilters } from '../components/bi/PortafoglioFilters';
-import { enrichDealsWithPortfolio } from '../components/bi/enrichDeals';
-import { deleteDoc, doc } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
+import { functionsInstance } from '@/api/firebaseClient';
+import { Search, X, Loader2, CheckCircle, Pencil, Trash2, Plus, Save, RefreshCw } from 'lucide-react';
+import { useData } from '@/lib/DataContext.jsx';
 
-const MESI = ['','Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic'];
+const callFn = async (name, payload) => {
+  const fn = httpsCallable(functionsInstance, name);
+  const res = await fn(payload);
+  return res.data;
+};
+
+const VALID_LOB = ['Cloud', 'Connettività', 'IoT', 'Other IT', 'Licensing', 'Security'];
+const AREAS = ['MNO','SNO','LNO','MNE','SNE','LNE','MCS','SLCE','SLCS','IC'];
+const ANNI = ['2024', '2025', '2026'];
 
 function fmt(v) {
   if (!v && v !== 0) return '—';
@@ -16,327 +23,370 @@ function fmt(v) {
   return `€${Number(v).toFixed(0)}`;
 }
 
-// Carica tutti i record di una collection con un filtro, paginando a 100
-async function loadAll(collectionName, filters = {}) {
-  const col = collection(db, collectionName);
-  let all = [];
-  let lastDoc = null;
+// ─── Modal Modifica Deal ───────────────────────────────────────────
+function EditDealModal({ deal, onSave, onClose }) {
+  const [form, setForm] = useState({ ...deal });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
 
-  while (true) {
-    const constraints = [col];
-    for (const [k, v] of Object.entries(filters)) {
-      constraints.push(where(k, '==', v));
-    }
-    constraints.push(limit(100));
-    if (lastDoc) constraints.push(startAfter(lastDoc));
-
-    const q = query(...constraints);
-    const snap = await getDocs(q);
-    if (snap.empty) break;
-    snap.docs.forEach(d => all.push({ id: d.id, ...d.data() }));
-    if (snap.docs.length < 100) break;
-    lastDoc = snap.docs[snap.docs.length - 1];
-    await new Promise(r => setTimeout(r, 50));
-  }
-  return all;
-}
-
-function SortIcon({ dir }) {
-  if (!dir) return <ChevronDown className="w-3 h-3 text-gray-300" />;
-  return dir === 'asc' ? <ChevronUp className="w-3 h-3 text-blue-500" /> : <ChevronDown className="w-3 h-3 text-blue-500" />;
-}
-
-function DataTable({ rows, columns, searchKeys, onDelete }) {
-  const [search, setSearch] = useState('');
-  const [sort, setSort] = useState({ key: null, dir: null });
-  const [page, setPage] = useState(1);
-  const PAGE_SIZE = 50;
-  const [selected, setSelected] = useState(new Set());
-  const [deleting, setDeleting] = useState(false);
-
-  const filtered = useMemo(() => {
-    let r = rows;
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      r = r.filter(row => searchKeys.some(k => String(row[k] ?? '').toLowerCase().includes(q)));
-    }
-    if (sort.key) {
-      r = [...r].sort((a, b) => {
-        const av = a[sort.key] ?? '';
-        const bv = b[sort.key] ?? '';
-        const cmp = typeof av === 'number' ? av - bv : String(av).localeCompare(String(bv));
-        return sort.dir === 'asc' ? cmp : -cmp;
-      });
-    }
-    return r;
-  }, [rows, search, sort, searchKeys]);
-
-  const total = filtered.length;
-  const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  const totalPages = Math.ceil(total / PAGE_SIZE);
-
-  const toggleSort = (key) => {
-    setSort(s => s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' });
-    setPage(1);
-  };
-
-  const toggleRow = (id) => {
-    const newSelected = new Set(selected);
-    if (newSelected.has(id)) newSelected.delete(id);
-    else newSelected.add(id);
-    setSelected(newSelected);
-  };
-
-  const handleDeleteSelected = async () => {
-    if (selected.size === 0) return;
-    if (!confirm(`Eliminare ${selected.size} righe?`)) return;
-    setDeleting(true);
+  const handleSave = async () => {
+    setSaving(true);
+    setError('');
     try {
-      for (const id of selected) {
-        await deleteDoc(doc(db, 'deals', id));
-      }
-      onDelete();
-      setSelected(new Set());
+      const fields = {
+        lob: form.lob, area_rac: form.area_rac, rac: form.rac,
+        attacco_difesa: form.attacco_difesa, tipo: form.tipo,
+        serv_i_anno: Number(form.serv_i_anno) || 0,
+        canoni: Number(form.canoni) || 0,
+        differenziale_servizi: Number(form.differenziale_servizi) || 0,
+        descrizione: form.descrizione, portafoglio: form.portafoglio,
+        ragione_sociale_capogruppo: form.ragione_sociale_capogruppo,
+      };
+      await callFn('updateDeal', { dealId: deal.id, fields, anno: deal.anno });
+      onSave({ ...deal, ...fields });
     } catch (e) {
-      alert('Errore durante eliminazione: ' + e.message);
-    } finally {
-      setDeleting(false);
+      setError(e.message);
     }
+    setSaving(false);
   };
+
+  const input = (label, key, type = 'text') => (
+    <div>
+      <label className="text-xs font-medium text-gray-600 block mb-1">{label}</label>
+      <input type={type} value={form[key] ?? ''} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+        className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+    </div>
+  );
+
+  const select = (label, key, opts) => (
+    <div>
+      <label className="text-xs font-medium text-gray-600 block mb-1">{label}</label>
+      <select value={form[key] ?? ''} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+        className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <option value="">—</option>
+        {opts.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-3 justify-between">
-        <div className="flex items-center gap-3 flex-1">
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }}
-              placeholder="Cerca..." className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2"><X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" /></button>}
-          </div>
-          <span className="text-xs text-gray-400">{total.toLocaleString('it-IT')} record</span>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <h2 className="font-bold text-gray-800">Modifica Deal — {deal.id_sdw}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
         </div>
-        {selected.size > 0 && (
-          <button onClick={handleDeleteSelected} disabled={deleting}
-            className="flex items-center gap-2 px-3 py-2 bg-red-600 text-white text-xs rounded-lg hover:bg-red-700 disabled:opacity-50">
-            <Trash2 className="w-4 h-4" /> {deleting ? 'Eliminando...' : `Elimina ${selected.size}`}
+        <div className="p-6 grid grid-cols-2 gap-4">
+          {input('Cliente (Capogruppo)', 'ragione_sociale_capogruppo')}
+          {input('Descrizione', 'descrizione')}
+          {select('LOB', 'lob', VALID_LOB)}
+          {select('Area RAC', 'area_rac', AREAS)}
+          {input('RAC', 'rac')}
+          {select('Attacco/Difesa', 'attacco_difesa', ['Attacco', 'Difesa'])}
+          {select('Tipo', 'tipo', ['CTR', 'TTV'])}
+          {input('Portafoglio', 'portafoglio')}
+          {input('Serv. I Anno (€)', 'serv_i_anno', 'number')}
+          {input('Canoni (€)', 'canoni', 'number')}
+          {input('Differenziale (€)', 'differenziale_servizi', 'number')}
+        </div>
+        {error && <div className="mx-6 mb-4 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">{error}</div>}
+        <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700">Annulla</button>
+          <button onClick={handleSave} disabled={saving}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-50">
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            {saving ? 'Salvataggio...' : 'Salva'}
           </button>
-        )}
-      </div>
-
-      <div className="overflow-x-auto rounded-xl border border-gray-100 shadow-sm">
-        <table className="w-full text-xs whitespace-nowrap">
-          <thead className="bg-gray-50 border-b border-gray-100">
-            <tr>
-              <th className="w-10 px-3 py-2.5">
-                <input type="checkbox"
-                  checked={selected.size === paged.length && paged.length > 0}
-                  onChange={() => {
-                    const newSel = new Set();
-                    if (selected.size !== paged.length) paged.forEach(r => newSel.add(r.id));
-                    setSelected(newSel);
-                  }} className="rounded" />
-              </th>
-              {columns.map(col => (
-                <th key={col.key} onClick={() => col.sortable !== false && toggleSort(col.key)}
-                  className={`px-3 py-2.5 text-left font-semibold text-gray-500 uppercase tracking-wide text-[10px] ${col.sortable !== false ? 'cursor-pointer hover:bg-gray-100 select-none' : ''}`}>
-                  <div className="flex items-center gap-1">{col.label}{col.sortable !== false && <SortIcon dir={sort.key === col.key ? sort.dir : null} />}</div>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {paged.map((row, i) => (
-              <tr key={row.id || i} className={`border-b border-gray-50 hover:bg-blue-50/40 transition-colors ${i % 2 === 0 ? 'bg-white' : 'bg-gray-50/30'} ${selected.has(row.id) ? 'bg-red-50' : ''}`}>
-                <td className="w-10 px-3 py-2"><input type="checkbox" checked={selected.has(row.id)} onChange={() => toggleRow(row.id)} className="rounded" /></td>
-                {columns.map(col => (
-                  <td key={col.key} className={`px-3 py-2 ${col.align === 'right' ? 'text-right font-medium' : 'text-gray-700'}`}>
-                    {col.render ? col.render(row[col.key], row) : (row[col.key] ?? '—')}
-                  </td>
-                ))}
-              </tr>
-            ))}
-            {paged.length === 0 && <tr><td colSpan={columns.length + 1} className="text-center py-8 text-gray-400">Nessun dato</td></tr>}
-          </tbody>
-        </table>
-      </div>
-
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between text-xs text-gray-500">
-          <span>Pagina {page} di {totalPages}</span>
-          <div className="flex gap-1">
-            <button onClick={() => setPage(p => Math.max(1, p-1))} disabled={page === 1} className="px-2 py-1 rounded border border-gray-200 disabled:opacity-40 hover:bg-gray-50">←</button>
-            {[...Array(Math.min(5, totalPages))].map((_, i) => {
-              const pg = Math.max(1, Math.min(totalPages - 4, page - 2)) + i;
-              return <button key={pg} onClick={() => setPage(pg)} className={`px-2.5 py-1 rounded border ${pg === page ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-200 hover:bg-gray-50'}`}>{pg}</button>;
-            })}
-            <button onClick={() => setPage(p => Math.min(totalPages, p+1))} disabled={page === totalPages} className="px-2 py-1 rounded border border-gray-200 disabled:opacity-40 hover:bg-gray-50">→</button>
-          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
 
-const DEAL_COLS = [
-  { key: 'anno', label: 'Anno' },
-  { key: 'portafoglio', label: 'Portafoglio' },
-  { key: 'tipo', label: 'Tipo', render: v => v ? <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${v === 'CTR' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>{v}</span> : '—' },
-  { key: 'mese', label: 'Mese', render: v => MESI[v] || v },
-  { key: 'id_sdw', label: 'ID SDW' },
-  { key: 'ragione_sociale', label: 'Ragione Sociale' },
-  { key: 'ragione_sociale_capogruppo', label: 'Capogruppo' },
-  { key: 'area_rac', label: 'Area RAC' },
-  { key: 'new_area_rac', label: 'New Area RAC' },
-  { key: 'rac', label: 'RAC' },
-  { key: 'area_mng', label: 'Area MNG' },
-  { key: 'struttura_sales', label: 'Struttura Sales' },
-  { key: 'attacco_difesa', label: 'Att/Dif' },
-  { key: 'lob', label: 'LOB' },
-  { key: 'lob_originale', label: 'LOB originale' },
-  { key: 'specialist', label: 'Specialist' },
-  { key: 'mese', label: 'Mese', render: v => MESI[v] || v },
-  { key: 'durata', label: 'Durata', align: 'right' },
-  { key: 'serv_i_anno', label: 'Serv. I Anno', align: 'right', render: v => fmt(v) },
-  { key: 'differenziale_servizi', label: 'Diff. Serv.', align: 'right', render: v => fmt(v) },
-];
+// ─── Modal Nuovo Deal ──────────────────────────────────────────────
+function NewDealModal({ anno, onSave, onClose }) {
+  const [form, setForm] = useState({ anno, tipo: 'CTR', attacco_difesa: 'Attacco', mese: 0, portafoglio: 'Base' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
 
-const PTF_COLS = [
-  { key: 'portafoglio_nome', label: 'Portafoglio' },
-  { key: 'ragione_sociale', label: 'Ragione Sociale' },
-  { key: 'capogruppo', label: 'Capogruppo' },
-  { key: 'cf', label: 'CF' },
-  { key: 'segmento_26', label: 'Segmento 2026' },
-  { key: 'area_rac', label: 'Area RAC' },
-  { key: 'rac', label: 'RAC' },
-  { key: 'area_rac_26', label: 'Area RAC 2026' },
-  { key: 'rac_26', label: 'RAC 2026' },
-];
-
-export default function Dati() {
-  const [tab, setTab] = useState('consuntivi');
-  const [deals, setDeals] = useState([]);
-  const [ptfClienti, setPtfClienti] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [loadedCount, setLoadedCount] = useState(0);
-  const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const [ptfFilters, setPtfFilters] = useState(EMPTY_PTF_FILTERS);
-  const [selectedAnno, setSelectedAnno] = useState('2026');
-
-  const loadData = async (anno) => {
-    setLoading(true);
-    setDeals([]);
-    setLoadedCount(0);
-
+  const handleSave = async () => {
+    if (!form.id_sdw || !form.ragione_sociale_capogruppo) { setError('ID SDW e Cliente sono obbligatori'); return; }
+    setSaving(true);
+    setError('');
     try {
-      // Carica deals con paginazione reale Firestore (startAfter)
-      const col = collection(db, 'deals');
-      let allDeals = [];
-      let lastDoc = null;
-
-      while (true) {
-        const { startAfter } = await import('firebase/firestore');
-        const constraints = [
-          col,
-          where('anno', '==', anno),
-          limit(100)
-        ];
-        if (lastDoc) constraints.push(startAfter(lastDoc));
-        const snap = await getDocs(query(...constraints));
-        if (snap.empty) break;
-        snap.docs.forEach(d => allDeals.push({ id: d.id, ...d.data() }));
-        setLoadedCount(allDeals.length);
-        if (snap.docs.length < 100) break;
-        lastDoc = snap.docs[snap.docs.length - 1];
-        await new Promise(r => setTimeout(r, 50));
-      }
-
-      // Carica portafoglio
-      const ptfCol = collection(db, 'portafoglio_clienti');
-      let allPtf = [];
-      let lastPtfDoc = null;
-
-      while (true) {
-        const { startAfter } = await import('firebase/firestore');
-        const constraints = [ptfCol, limit(100)];
-        if (lastPtfDoc) constraints.push(startAfter(lastPtfDoc));
-        const snap = await getDocs(query(...constraints));
-        if (snap.empty) break;
-        snap.docs.forEach(d => allPtf.push({ id: d.id, ...d.data() }));
-        if (snap.docs.length < 100) break;
-        lastPtfDoc = snap.docs[snap.docs.length - 1];
-        await new Promise(r => setTimeout(r, 50));
-      }
-
-      const enriched = enrichDealsWithPortfolio(allDeals, allPtf);
-      setDeals(enriched);
-      setPtfClienti(allPtf);
-    } catch (e) {
-      console.error('Errore caricamento dati:', e);
-    } finally {
-      setLoading(false);
-    }
+      await callFn('createDeal', { deal: { ...form, serv_i_anno: Number(form.serv_i_anno)||0, canoni: Number(form.canoni)||0, differenziale_servizi: Number(form.differenziale_servizi)||0, mese: Number(form.mese)||0 } });
+      onSave();
+    } catch (e) { setError(e.message); }
+    setSaving(false);
   };
 
-  useEffect(() => { loadData(selectedAnno); }, [selectedAnno]);
+  const input = (label, key, type = 'text', required = false) => (
+    <div>
+      <label className="text-xs font-medium text-gray-600 block mb-1">{label}{required && <span className="text-red-500 ml-0.5">*</span>}</label>
+      <input type={type} value={form[key] ?? ''} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+        className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+    </div>
+  );
 
-  const filteredDeals = useMemo(() => applyFilters(deals, filters), [deals, filters]);
-  const filteredPtf = useMemo(() => applyPortafoglioFilters(ptfClienti, ptfFilters), [ptfClienti, ptfFilters]);
+  const select = (label, key, opts, required = false) => (
+    <div>
+      <label className="text-xs font-medium text-gray-600 block mb-1">{label}{required && <span className="text-red-500 ml-0.5">*</span>}</label>
+      <select value={form[key] ?? ''} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+        className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <option value="">—</option>
+        {opts.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
 
   return (
-    <div className="p-6 space-y-5 min-h-full bg-gray-50">
-      <div className="flex items-center gap-4 flex-wrap">
-        <div className="flex-1">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <h2 className="font-bold text-gray-800">Nuovo Deal — Anno {anno}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-6 grid grid-cols-2 gap-4">
+          {input('ID SDW', 'id_sdw', 'text', true)}
+          {input('Cliente (Capogruppo)', 'ragione_sociale_capogruppo', 'text', true)}
+          {input('Ragione Sociale', 'ragione_sociale')}
+          {input('Descrizione', 'descrizione')}
+          {select('LOB', 'lob', VALID_LOB)}
+          {select('Area RAC', 'area_rac', AREAS)}
+          {input('RAC', 'rac')}
+          {select('Attacco/Difesa', 'attacco_difesa', ['Attacco', 'Difesa'])}
+          {select('Tipo', 'tipo', ['CTR', 'TTV'])}
+          {input('Portafoglio', 'portafoglio')}
+          {input('Mese', 'mese', 'number')}
+          {input('Serv. I Anno (€)', 'serv_i_anno', 'number')}
+          {input('Canoni (€)', 'canoni', 'number')}
+          {input('Differenziale (€)', 'differenziale_servizi', 'number')}
+        </div>
+        {error && <div className="mx-6 mb-4 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">{error}</div>}
+        <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700">Annulla</button>
+          <button onClick={handleSave} disabled={saving}
+            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white text-sm font-semibold rounded-xl hover:bg-green-700 disabled:opacity-50">
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+            {saving ? 'Salvataggio...' : 'Crea Deal'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Pagina Dati ───────────────────────────────────────────────────
+export default function Dati() {
+  const { reload: reloadAggregati } = useData();
+  const [deals, setDeals] = useState([]);
+  const [anno, setAnno] = useState('2026');
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [loadedAll, setLoadedAll] = useState(false);
+  const [loadedCount, setLoadedCount] = useState(0);
+  const [page, setPage] = useState(0);
+  const [selected, setSelected] = useState(new Set());
+  const [editDeal, setEditDeal] = useState(null);
+  const [showNew, setShowNew] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const cancelRef = useRef(false);
+  const PAGE_SIZE = 50;
+
+  useEffect(() => {
+    cancelRef.current = false;
+    setDeals([]);
+    setPage(0);
+    setLoadedAll(false);
+    setLoadedCount(0);
+    setSelected(new Set());
+    setLoading(true);
+    loadProgressively(anno);
+    return () => { cancelRef.current = true; };
+  }, [anno]);
+
+  const loadProgressively = async (anno) => {
+    const col = collection(db, 'deals');
+    let all = [];
+    let lastDoc = null;
+    while (true) {
+      if (cancelRef.current) break;
+      const constraints = [col, where('anno', '==', anno), limit(100)];
+      if (lastDoc) constraints.push(startAfter(lastDoc));
+      const snap = await getDocs(query(...constraints));
+      if (snap.empty) break;
+      snap.docs.forEach(d => all.push({ id: d.id, ...d.data() }));
+      lastDoc = snap.docs[snap.docs.length - 1];
+      setDeals([...all]);
+      setLoadedCount(all.length);
+      setLoading(false);
+      if (snap.docs.length < 100) break;
+      await new Promise(r => setTimeout(r, 30));
+    }
+    if (!cancelRef.current) setLoadedAll(true);
+  };
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return deals;
+    const q = search.toLowerCase();
+    return deals.filter(d =>
+      d.ragione_sociale_capogruppo?.toLowerCase().includes(q) ||
+      d.ragione_sociale?.toLowerCase().includes(q) ||
+      d.id_sdw?.toLowerCase().includes(q) ||
+      d.descrizione?.toLowerCase().includes(q)
+    );
+  }, [deals, search]);
+
+  const pageDeals = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+
+  const toggleSelect = (id) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    if (selected.size === pageDeals.length) setSelected(new Set());
+    else setSelected(new Set(pageDeals.map(d => d.id)));
+  };
+
+  const handleDelete = async () => {
+    if (!selected.size || !confirm(`Eliminare ${selected.size} deal? Questa operazione aggiornerà anche gli aggregati.`)) return;
+    setDeleting(true);
+    try {
+      await callFn('deleteDeal', { dealIds: [...selected], anno });
+      setDeals(prev => prev.filter(d => !selected.has(d.id)));
+      setSelected(new Set());
+      await reloadAggregati();
+    } catch (e) { alert('Errore: ' + e.message); }
+    setDeleting(false);
+  };
+
+  const handleEditSave = (updated) => {
+    setDeals(prev => prev.map(d => d.id === updated.id ? updated : d));
+    setEditDeal(null);
+    reloadAggregati();
+  };
+
+  const handleNewSave = () => {
+    setShowNew(false);
+    loadProgressively(anno);
+    reloadAggregati();
+  };
+
+  return (
+    <div className="p-6 space-y-4 min-h-full bg-gray-50">
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
           <h1 className="text-2xl font-bold text-gray-800">Dati di Dettaglio</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
-            {loading ? `Caricamento anno ${selectedAnno}... ${loadedCount.toLocaleString('it-IT')} record` : 'Visualizza e gestisci i dati caricati'}
+          <p className="text-sm text-gray-500 flex items-center gap-2">
+            {loading ? <><Loader2 className="w-3 h-3 animate-spin text-blue-400" />Caricamento...</>
+              : <>{filtered.length.toLocaleString('it-IT')} deal
+                {!loadedAll && <><Loader2 className="w-3 h-3 animate-spin text-blue-300 ml-1" />{loadedCount.toLocaleString('it-IT')} caricati</>}
+                {loadedAll && <><CheckCircle className="w-3 h-3 text-green-400 ml-1" />{loadedCount.toLocaleString('it-IT')} totali</>}
+              </>}
           </p>
         </div>
-        <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
-          {['2024', '2025', '2026'].map(a => (
-            <button key={a} onClick={() => setSelectedAnno(a)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${selectedAnno === a ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+        <div className="flex items-center gap-2 flex-wrap">
+          {ANNI.map(a => (
+            <button key={a} onClick={() => setAnno(a)}
+              className={`px-4 py-1.5 rounded-full text-sm font-semibold border transition-all ${anno === a ? 'bg-blue-600 text-white border-blue-600 shadow' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400'}`}>
               {a}
             </button>
           ))}
+          <button onClick={() => setShowNew(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white text-sm font-semibold rounded-xl hover:bg-green-700">
+            <Plus className="w-4 h-4" /> Nuovo deal
+          </button>
         </div>
       </div>
 
-      <div className="flex gap-1 bg-gray-100 rounded-xl p-1 w-fit">
-        {[
-          { key: 'consuntivi', label: `Consuntivi (${filteredDeals.length.toLocaleString('it-IT')})` },
-          { key: 'portafoglio', label: `Portafoglio Clienti (${filteredPtf.length.toLocaleString('it-IT')})` },
-        ].map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${tab === t.key ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-            {t.label}
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+          <input value={search} onChange={e => { setSearch(e.target.value); setPage(0); }}
+            placeholder="Cerca cliente, ID SDW, descrizione..."
+            className="w-full pl-8 pr-8 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2"><X className="w-3.5 h-3.5 text-gray-400" /></button>}
+        </div>
+        {selected.size > 0 && (
+          <button onClick={handleDelete} disabled={deleting}
+            className="flex items-center gap-1.5 px-3 py-2 bg-red-600 text-white text-xs font-semibold rounded-xl hover:bg-red-700 disabled:opacity-50">
+            {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+            {deleting ? 'Eliminazione...' : `Elimina ${selected.size}`}
           </button>
-        ))}
+        )}
       </div>
-
-      {tab === 'consuntivi' && !loading && <DealsFilters deals={deals} filters={filters} onChange={setFilters} />}
-      {tab === 'portafoglio' && !loading && <PortafoglioFilters rows={ptfClienti} filters={ptfFilters} onChange={setPtfFilters} />}
 
       {loading ? (
-        <div className="flex flex-col items-center justify-center py-16 gap-3 text-gray-400">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
-          <p className="text-sm">Caricamento anno {selectedAnno}...</p>
-          <p className="text-xs">{loadedCount.toLocaleString('it-IT')} record caricati</p>
+        <div className="flex items-center justify-center py-12 gap-3 text-gray-400">
+          <Loader2 className="w-6 h-6 animate-spin text-blue-400" />
+          <span className="text-sm">Caricamento dati {anno}...</span>
         </div>
       ) : (
-        <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-sm">
-          {tab === 'consuntivi' && (
-            <DataTable rows={filteredDeals} columns={DEAL_COLS}
-              searchKeys={['ragione_sociale', 'ragione_sociale_capogruppo', 'id_sdw', 'area_rac', 'rac', 'lob']}
-              onDelete={() => loadData(selectedAnno)} />
-          )}
-          {tab === 'portafoglio' && (
-            <DataTable rows={filteredPtf} columns={PTF_COLS}
-              searchKeys={['ragione_sociale', 'capogruppo', 'cf', 'rac', 'area_rac', 'portafoglio_nome']}
-              onDelete={() => loadData(selectedAnno)} />
-          )}
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-100 text-gray-500">
+                  <th className="w-10 px-3 py-3">
+                    <input type="checkbox" checked={selected.size === pageDeals.length && pageDeals.length > 0} onChange={selectAll} className="rounded" />
+                  </th>
+                  <th className="text-left px-3 py-3 font-medium">Azioni</th>
+                  <th className="text-left px-3 py-3 font-medium">ID SDW</th>
+                  <th className="text-left px-3 py-3 font-medium">Cliente</th>
+                  <th className="text-left px-3 py-3 font-medium">Descrizione</th>
+                  <th className="text-center px-2 py-3 font-medium">LOB</th>
+                  <th className="text-center px-2 py-3 font-medium">Area</th>
+                  <th className="text-center px-2 py-3 font-medium">A/D</th>
+                  <th className="text-center px-2 py-3 font-medium">Tipo</th>
+                  <th className="text-right px-3 py-3 font-medium">Serv. I Anno</th>
+                  <th className="text-right px-3 py-3 font-medium">Differenziale</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageDeals.map(d => (
+                  <tr key={d.id} className={`border-b border-gray-50 hover:bg-blue-50/30 transition-colors ${selected.has(d.id) ? 'bg-red-50' : ''}`}>
+                    <td className="w-10 px-3 py-2"><input type="checkbox" checked={selected.has(d.id)} onChange={() => toggleSelect(d.id)} className="rounded" /></td>
+                    <td className="px-3 py-2">
+                      <button onClick={() => setEditDeal(d)} className="p-1 rounded hover:bg-blue-100 text-blue-500 hover:text-blue-700">
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
+                    <td className="px-3 py-2 font-mono text-gray-500">{d.id_sdw}</td>
+                    <td className="px-3 py-2 font-medium text-gray-800 max-w-[140px] truncate">{d.ragione_sociale_capogruppo || d.ragione_sociale}</td>
+                    <td className="px-3 py-2 text-gray-600 max-w-[180px] truncate">{d.descrizione}</td>
+                    <td className="px-2 py-2 text-center text-gray-500">{d.lob || '—'}</td>
+                    <td className="px-2 py-2 text-center"><span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[10px] font-medium">{d.area_rac}</span></td>
+                    <td className="px-2 py-2 text-center">
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${d.attacco_difesa === 'Attacco' ? 'bg-orange-100 text-orange-700' : 'bg-indigo-100 text-indigo-700'}`}>{d.attacco_difesa}</span>
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${d.tipo === 'CTR' ? 'bg-teal-100 text-teal-700' : 'bg-violet-100 text-violet-700'}`}>{d.tipo || '—'}</span>
+                    </td>
+                    <td className="px-3 py-2 text-right font-semibold text-gray-800">{fmt(d.serv_i_anno)}</td>
+                    <td className={`px-3 py-2 text-right font-medium ${(d.differenziale_servizi||0) >= 0 ? 'text-green-600' : 'text-red-500'}`}>{fmt(d.differenziale_servizi)}</td>
+                  </tr>
+                ))}
+                {pageDeals.length === 0 && <tr><td colSpan={11} className="text-center py-8 text-gray-400">Nessun risultato</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100 bg-gray-50">
+            <span className="text-xs text-gray-500">Pagina {page+1}/{totalPages||1} · {filtered.length.toLocaleString('it-IT')} deal</span>
+            <div className="flex gap-2">
+              <button disabled={page===0} onClick={() => setPage(p=>p-1)} className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 disabled:opacity-40 hover:bg-gray-100">← Prec</button>
+              <button disabled={page>=totalPages-1} onClick={() => setPage(p=>p+1)} className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 disabled:opacity-40 hover:bg-gray-100">Succ →</button>
+            </div>
+          </div>
         </div>
       )}
+
+      {editDeal && <EditDealModal deal={editDeal} onSave={handleEditSave} onClose={() => setEditDeal(null)} />}
+      {showNew && <NewDealModal anno={anno} onSave={handleNewSave} onClose={() => setShowNew(false)} />}
     </div>
   );
 }
