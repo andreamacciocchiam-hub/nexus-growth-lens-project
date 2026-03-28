@@ -15,25 +15,35 @@ function parseSort(sortStr = '-created_date') {
 function makeEntity(collectionName) {
   const col = collection(db, collectionName);
   return {
-    async list(sortStr = '-created_date', lim = 2000) {
+    async list(sortStr = '-created_date', lim = 100) {
       const { field, direction } = parseSort(sortStr);
-      const q = query(col, orderBy(field, direction), fsLimit(lim));
+      // Firestore max è 10000, Base44 SDK restituisce max 100 per chiamata
+      const safeLim = Math.min(lim, 100);
+      const q = query(col, orderBy(field, direction), fsLimit(safeLim));
       const snap = await getDocs(q);
       return snap.docs.map(d => ({ id: d.id, ...d.data() }));
     },
-    async filter(filters = {}) {
+
+    async filter(filters = {}, sort = null, lim = 100, offset = 0) {
       const constraints = [col];
       for (const [k, v] of Object.entries(filters)) {
-        constraints.push(where(k, '==', v));
+        if (v !== undefined && v !== null) constraints.push(where(k, '==', v));
       }
-      constraints.push(fsLimit(5000));
+      // Firestore max è 10000, usiamo max 100 per sicurezza
+      const safeLim = Math.min(lim || 100, 100);
+      if (sort) {
+        const { field, direction } = parseSort(sort);
+        constraints.push(orderBy(field, direction));
+      }
+      constraints.push(fsLimit(safeLim));
       const q = query(...constraints);
       const snap = await getDocs(q);
       return snap.docs.map(d => ({ id: d.id, ...d.data() }));
     },
+
     async bulkCreate(records) {
       const results = [];
-      const CHUNK = 400;
+      const CHUNK = 100; // Firestore batch max è 500, usiamo 100 per sicurezza
       for (let i = 0; i < records.length; i += CHUNK) {
         const batch = writeBatch(db);
         records.slice(i, i + CHUNK).forEach(r => {
@@ -47,9 +57,10 @@ function makeEntity(collectionName) {
       }
       return results;
     },
+
     async deleteMany(filters = {}) {
       const docs = await this.filter(filters);
-      const CHUNK = 400;
+      const CHUNK = 100;
       for (let i = 0; i < docs.length; i += CHUNK) {
         const batch = writeBatch(db);
         docs.slice(i, i + CHUNK).forEach(d => batch.delete(doc(col, d.id)));
@@ -59,7 +70,9 @@ function makeEntity(collectionName) {
       }
       return { deleted: docs.length };
     },
+
     async delete(id) { await deleteDoc(doc(col, id)); },
+
     async get(id) {
       const snap = await getDoc(doc(col, id));
       return snap.exists() ? { id: snap.id, ...snap.data() } : null;
