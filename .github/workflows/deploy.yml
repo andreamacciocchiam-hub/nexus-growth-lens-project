@@ -20,14 +20,14 @@ jobs:
         run: npm cache clean --force
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm install
 
       - name: Build frontend
         run: npm run build -- --force
       - name: Clear cache
         run: echo "Cache bust $(date)" > cache-bust.txt
       - name: Install functions dependencies
-        run: npm ci
+        run: npm install
         working-directory: functions
 
       - name: Deploy to Firebase Hosting
