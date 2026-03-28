@@ -15,6 +15,9 @@ jobs:
       - uses: actions/setup-node@v3
         with:
           node-version: 20
+          
+      - name: Clear npm cache
+        run: npm cache clean --force
 
       - name: Install frontend dependencies
         run: npm ci
