@@ -3,9 +3,9 @@ import { useData } from '@/lib/DataContext.jsx';
 import { Send, Bot, User, Sparkles, Database, Loader2, TrendingUp, BarChart2, AlertCircle } from 'lucide-react';
 
 function fmt(v) {
-  if (!v && v !== 0) return '€0';
-  const val = (v || 0) * 1000;
-  if (Math.abs(val) >= 1_000_000_000) return `€${(val/1_000_000_000).toFixed(2)}B`;
+  if (!v && v !== 0) return '—';
+  return Math.round(v || 0).toLocaleString('it-IT');
+}B`;
   if (Math.abs(val) >= 1_000_000) return `€${(val/1_000_000).toFixed(2)}M`;
   if (Math.abs(val) >= 1_000) return `€${(val/1_000).toFixed(0)}K`;
   return `€${Math.round(val)}`;
