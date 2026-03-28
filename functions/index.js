@@ -415,3 +415,173 @@ exports.importPortafoglioClienti = onCall(
 
 // ─── ping ─────────────────────────────────────────────────────────
 exports.ping = onCall({ ...FN_CONFIG }, async () => ({ ok: true, ts: Date.now() }));
+
+// ─── Mapping LOB → colonna specialist nel portafoglio ─────────────
+const LOB_SPECIALIST_MAP = {
+  'Cloud':       'acc_specialist_cloud_iot_5g',
+  'IoT':         'acc_specialist_cloud_iot_5g',
+  'Security':    'acc_specialist_sec',
+  'Licensing':   'acc_specialist_lss',
+  'Connettività': null,
+  'Other IT':    null,
+};
+
+// ─── importPortafoglioFromStorage ─────────────────────────────────
+// Legge file portafoglio da Storage, salva clienti con campi specialist
+exports.importPortafoglioFromStorage = onCall(
+  { ...FN_CONFIG, timeoutSeconds: 300, memory: '512MiB' },
+  async (request) => {
+    if (!request.auth) throw new Error('Non autenticato');
+    const { storagePath, portafoglio_nome } = request.data;
+    if (!storagePath) throw new Error('storagePath obbligatorio');
+
+    const bucket = getStorage().bucket();
+    const [buffer] = await bucket.file(storagePath).download();
+    const XLSX = require('xlsx');
+    const wb = XLSX.read(buffer, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
+
+    const str = v => (v != null && String(v).trim() !== '' ? String(v).trim() : null);
+
+    const records = rows.map(r => ({
+      cf:                        str(r['CF']),
+      cf_capogruppo:             str(r['CF CAPOGRUPPO']),
+      ragione_sociale:           str(r['RAG_SOC']) || str(r['Capogruppo']) || 'N/D',
+      capogruppo:                str(r['Capogruppo']),
+      vertical_gruppo:           str(r['VERTICAL Gruppo']),
+      segmento_26:               str(r['SEGMENTO CLIENTE 2026']),
+      area_rac:                  str(r['AREA RAC']),
+      rac:                       str(r['RAC']),
+      area_mng:                  str(r['AREA MNG']),
+      struttura_sales:           str(r['STRUTTURA SALES CORE']),
+      area_rac_26:               str(r['AREA RAC 26']),
+      rac_26:                    str(r['RAC 26']),
+      area_mng_26:               str(r['AREA MNG 26']),
+      struttura_sales_26:        str(r['STRUTTURA SALES CORE 26']),
+      // Campi specialist
+      area_am_spec:              str(r['AREA AM SPEC']),
+      area_mng_spec:             str(r['AREA MNG SPEC']),
+      acc_specialist_lss:        str(r['ACC SPECIALIST LSS']),
+      acc_specialist_sec:        str(r['ACC SPECIALIST SEC']),
+      acc_specialist_cloud_iot_5g: str(r['ACC SPECIALIST CLOUD/IoT/5G']),
+      portafoglio_nome:          portafoglio_nome || 'Base',
+    })).filter(r => r.ragione_sociale);
+
+    // Cancella e reinserisci
+    const pNome = portafoglio_nome || 'Base';
+    let snap;
+    do {
+      snap = await db.collection('portafoglio_clienti')
+        .where('portafoglio_nome', '==', pNome).limit(400).get();
+      if (snap.empty) break;
+      const batch = db.batch();
+      snap.docs.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+      await new Promise(r => setTimeout(r, 100));
+    } while (!snap.empty);
+
+    let inserted = 0;
+    for (let i = 0; i < records.length; i += 400) {
+      const batch = db.batch();
+      records.slice(i, i + 400).forEach(rec => {
+        const ref = db.collection('portafoglio_clienti').doc();
+        batch.set(ref, { ...rec, created_date: admin.firestore.FieldValue.serverTimestamp() });
+        inserted++;
+      });
+      await batch.commit();
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    return { ok: true, inserted };
+  }
+);
+
+// ─── enrichDealsWithSpecialist ─────────────────────────────────────
+// Arricchisce i deal con i dati specialist dal portafoglio per LOB
+exports.enrichDealsWithSpecialist = onCall(
+  { ...FN_CONFIG, timeoutSeconds: 540, memory: '1GiB' },
+  async (request) => {
+    if (!request.auth) throw new Error('Non autenticato');
+    const { anno } = request.data;
+    if (!anno) throw new Error('anno obbligatorio');
+
+    // Carica portafoglio clienti in memoria
+    const ptfSnap = await db.collection('portafoglio_clienti').get();
+    const ptfMap = {};
+    ptfSnap.docs.forEach(d => {
+      const data = d.data();
+      const key = (data.ragione_sociale || '').toLowerCase().trim();
+      const keyCap = (data.capogruppo || '').toLowerCase().trim();
+      const keyCf = data.cf || '';
+      if (key) ptfMap[key] = data;
+      if (keyCap && !ptfMap[keyCap]) ptfMap[keyCap] = data;
+      if (keyCf) ptfMap[`cf:${keyCf}`] = data;
+    });
+
+    // Processa i deal a pagine
+    let offset = 0;
+    let totalUpdated = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const snap = await db.collection('deals')
+        .where('anno', '==', String(anno))
+        .limit(400).offset(offset).get();
+
+      if (snap.empty) break;
+      hasMore = snap.docs.length === 400;
+      offset += snap.docs.length;
+
+      const batch = db.batch();
+      snap.docs.forEach(d => {
+        const deal = d.data();
+        const lob = deal.lob || '';
+        const specialistCol = LOB_SPECIALIST_MAP[lob]; // null se nessuno specialist
+
+        // Trova cliente in portafoglio
+        const nameKey = (deal.ragione_sociale_capogruppo || deal.ragione_sociale || '').toLowerCase().trim();
+        const cfKey = deal.cf_capogruppo || deal.cf || '';
+        const ptf = ptfMap[`cf:${cfKey}`] || ptfMap[nameKey] || null;
+
+        const update = {
+          area_am_spec: ptf?.area_am_spec || null,
+          area_mng_spec: ptf?.area_mng_spec || null,
+          specialist_lob: specialistCol && ptf ? (ptf[specialistCol] || null) : null,
+          specialist_col: specialistCol || null, // quale colonna è stata usata
+        };
+
+        batch.update(d.ref, update);
+        totalUpdated++;
+      });
+
+      await batch.commit();
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    // Ricalcola aggregati
+    await computeAndSaveAggregates(anno);
+
+    return { success: true, updated: totalUpdated };
+  }
+);
+
+// ─── listStorageVersions ───────────────────────────────────────────
+// Lista tutti i file in una cartella Storage con metadati
+exports.listStorageVersions = onCall(
+  { ...FN_CONFIG, timeoutSeconds: 30 },
+  async (request) => {
+    if (!request.auth) throw new Error('Non autenticato');
+    const { prefix } = request.data;
+    const bucket = getStorage().bucket();
+    const [files] = await bucket.getFiles({ prefix: prefix || 'portafoglio/' });
+    const result = await Promise.all(files.map(async f => ({
+      name: f.name,
+      path: f.name,
+      size: parseInt(f.metadata.size || 0),
+      updated: f.metadata.updated,
+      basename: f.name.split('/').pop(),
+    })));
+    return { files: result.sort((a, b) => b.updated.localeCompare(a.updated)) };
+  }
+);
