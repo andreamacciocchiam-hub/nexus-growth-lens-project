@@ -67,9 +67,6 @@ function formatDate(iso) {
 function fmt(v) {
   if (!v && v !== 0) return '—';
   return Math.round(v || 0).toLocaleString('it-IT');
-}M`;
-  if (Math.abs(v) >= 1_000) return `€${(v/1_000).toFixed(0)}K`;
-  return `€${Math.round(v)}`;
 }
 function mesiNome(m) { return ['','Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic'][m] || m; }
 
