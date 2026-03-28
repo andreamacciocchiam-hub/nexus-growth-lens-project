@@ -1,6 +1,5 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
-import { collection, query, where, limit, getDocs, startAfter } from 'firebase/firestore';
-import { db } from '@/api/firebaseClient';
+import { useState, useMemo, useCallback } from 'react';
+import { useData } from '@/lib/DataContext.jsx';
 import {
   Euro, TrendingUp, TrendingDown, FileText, RefreshCw,
   Shield, Swords, Filter, X, ChevronDown, BarChart2, Activity
@@ -27,41 +26,6 @@ function fmt(v) {
 function fmtPct(v, decimals = 1) {
   if (v === null || v === undefined) return '—';
   return `${v >= 0 ? '+' : ''}${v.toFixed(decimals)}%`;
-}
-
-// ✅ Paginazione corretta con startAfter — nessun limite superato
-async function loadCollectionByAnno(anno) {
-  const col = collection(db, 'deals');
-  let all = [];
-  let lastDoc = null;
-  while (true) {
-    const constraints = [col, where('anno', '==', anno), limit(100)];
-    if (lastDoc) constraints.push(startAfter(lastDoc));
-    const snap = await getDocs(query(...constraints));
-    if (snap.empty) break;
-    snap.docs.forEach(d => all.push({ id: d.id, ...d.data() }));
-    if (snap.docs.length < 100) break;
-    lastDoc = snap.docs[snap.docs.length - 1];
-    await new Promise(r => setTimeout(r, 50));
-  }
-  return all;
-}
-
-async function loadPortafoglio() {
-  const col = collection(db, 'portafoglio_clienti');
-  let all = [];
-  let lastDoc = null;
-  while (true) {
-    const constraints = [col, limit(100)];
-    if (lastDoc) constraints.push(startAfter(lastDoc));
-    const snap = await getDocs(query(...constraints));
-    if (snap.empty) break;
-    snap.docs.forEach(d => all.push({ id: d.id, ...d.data() }));
-    if (snap.docs.length < 100) break;
-    lastDoc = snap.docs[snap.docs.length - 1];
-    await new Promise(r => setTimeout(r, 50));
-  }
-  return all;
 }
 
 function computeBIData(deals) {
@@ -242,8 +206,6 @@ const MESI_NAMES = ['','Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ot
 
 export default function Dashboard() {
   const [allDeals, setAllDeals] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [loadingMsg, setLoadingMsg] = useState('Caricamento deals...');
   const [hasData, setHasData] = useState(null);
   const [error, setError] = useState(null);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
@@ -252,42 +214,19 @@ export default function Dashboard() {
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [mtdEnabled, setMtdEnabled] = useState(false);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      // Carica tutti e 3 gli anni in sequenza con paginazione corretta
-      setLoadingMsg('Caricamento 2024...');
-      const deals2024 = await loadCollectionByAnno('2024');
-      setLoadingMsg('Caricamento 2025...');
-      const deals2025 = await loadCollectionByAnno('2025');
-      setLoadingMsg('Caricamento 2026...');
-      const deals2026 = await loadCollectionByAnno('2026');
-      setLoadingMsg('Caricamento portafoglio...');
-      const rawPtf = await loadPortafoglio();
+  const { deals: rawDeals, portafoglio: rawPtf, loading, reload } = useData();
+  const loadData = reload;
 
-      const rawDeals = [...deals2024, ...deals2025, ...deals2026];
-
-      if (!rawDeals || rawDeals.length === 0) {
-        setHasData(false);
-        return;
-      }
-
-      setLoadingMsg('Elaborazione dati...');
-      await new Promise(r => setTimeout(r, 0));
+  // Usa dati dal context globale — già caricati
+  useEffect(() => {
+    if (rawDeals.length > 0) {
       const enriched = enrichDealsWithPortfolio(rawDeals, rawPtf);
       setHasData(true);
       setAllDeals(enriched);
-    } catch (err) {
-      console.error('[Dashboard] Errore caricamento:', err);
-      setError(err?.message || 'Errore sconosciuto');
+    } else if (!loading) {
       setHasData(false);
-    } finally {
-      setLoading(false);
     }
-  }, []);
-
-  useEffect(() => { loadData(); }, [loadData]);
+  }, [rawDeals, rawPtf, loading]);
 
   const mtdMesi = useMemo(() => {
     const annoRif = '2026';
