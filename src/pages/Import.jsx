@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { ref, uploadBytesResumable, listAll, getMetadata, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytesResumable, listAll, getMetadata, getBytes } from 'firebase/storage';
 import { collection, getDocs } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { storage, functionsInstance, db } from '@/api/firebaseClient';
@@ -190,9 +190,8 @@ export default function Import() {
       // Step 1 — Scarica file da Storage nel browser
       addLog(`▶ Download file ${anno} da Storage...`);
       const fileRef = ref(storage, activePath);
-      const url = await getDownloadURL(fileRef);
-      const response = await fetch(url);
-      const arrayBuffer = await response.arrayBuffer();
+      const { getBytes } = await import('firebase/storage');
+      const arrayBuffer = await getBytes(fileRef);
       addLog(`✓ File scaricato (${(arrayBuffer.byteLength/1024).toFixed(0)} KB)`, 'success');
 
       // Step 2 — Parse Excel nel browser
