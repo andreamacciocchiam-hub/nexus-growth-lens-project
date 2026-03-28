@@ -1,23 +1,17 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { useData } from '@/lib/DataContext.jsx';
-import { collection, query, where, limit, getDocs, startAfter } from 'firebase/firestore';
-import { db } from '@/api/firebaseClient';
 import { httpsCallable } from 'firebase/functions';
 import { functionsInstance } from '@/api/firebaseClient';
 import {
-  Euro, TrendingUp, TrendingDown, FileText, RefreshCw,
-  Filter, X, ChevronDown, BarChart2, Activity, AlertCircle,
-  Zap, ChevronRight, ChevronLeft
+  Euro, TrendingUp, TrendingDown, FileText,
+  RefreshCw, Filter, X, Zap, AlertCircle,
+  ChevronLeft, ChevronRight, Loader2, BarChart2
 } from 'lucide-react';
 import KPICard from '../components/bi/KPICard';
 import KPIAlertBanner from '../components/bi/KPIAlertBanner';
-import AreaChart from '../components/bi/AreaChart';
-import AmbitoChart from '../components/bi/AmbitoChart';
-import KPIAnalisi from '../components/bi/KPIAnalisi';
 import RevenueByAreaChart from '../components/bi/RevenueByAreaChart';
 import MarginByAreaChart from '../components/bi/MarginByAreaChart';
 
-// Valori K€ → formato leggibile
 function fmt(v) {
   if (!v && v !== 0) return '€0';
   const val = (v || 0) * 1000;
@@ -35,396 +29,299 @@ const pct = (a, b) => b > 0 ? ((a - b) / b * 100) : null;
 const AREAS = ['MNO','SNO','LNO','MNE','SNE','LNE','MCS','SLCE','SLCS','IC'];
 const ANNI = ['2024','2025','2026'];
 const MESI = ['','Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic'];
+const EMPTY = {
+  anno:'', mese:'', area_rac:'', lob:'', attacco_difesa:'',
+  rac_26:'', area_am_26:'', area_mng_26:'', struttura_sales_26:'',
+  area_mng_spec_26:'', specialist_lss:'', specialist_sec:'',
+  specialist_cloud:'', iot:''
+};
+const ANAGRAFICA_KEYS = ['rac_26','area_am_26','area_mng_26','struttura_sales_26','area_mng_spec_26','specialist_lss','specialist_sec','specialist_cloud','iot'];
 
-// ─── Sidebar Filtri ────────────────────────────────────────────────
-function FilterSidebar({ aggregati, portafoglio, filters, onChange, onApply, onReset, collapsed, onToggle }) {
-  const [local, setLocal] = useState(filters);
+function computeKPI(deals) {
+  if (!deals.length) return { serv:0, canoni:0, diff:0, att:0, dif:0, n:0, ctr:0, ttv:0 };
+  return {
+    n: deals.length,
+    serv: deals.reduce((s,d) => s+(d.serv_i_anno||0), 0),
+    canoni: deals.reduce((s,d) => s+(d.canoni||0), 0),
+    diff: deals.reduce((s,d) => s+(d.differenziale_servizi||0), 0),
+    att: deals.filter(d=>d.attacco_difesa==='Attacco').reduce((s,d)=>s+(d.serv_i_anno||0),0),
+    dif: deals.filter(d=>d.attacco_difesa!=='Attacco').reduce((s,d)=>s+(d.serv_i_anno||0),0),
+    ctr: deals.filter(d=>d.tipo==='CTR').length,
+    ttv: deals.filter(d=>d.tipo==='TTV').length,
+  };
+}
 
-  useEffect(() => { setLocal(filters); }, [filters]);
-
-  const set = (k, v) => setLocal(prev => ({ ...prev, [k]: v }));
-
-  // Valori unici dal portafoglio
-  const uniq = (field) => [...new Set(portafoglio.map(c => c[field]).filter(Boolean))].sort();
-
-  const mesi26 = useMemo(() => {
-    const ag26 = aggregati?.['2026'];
-    return (ag26?.byMese || []).map(m => m.mese).sort((a,b)=>a-b);
-  }, [aggregati]);
-
-  const hasFilters = Object.values(local).some(v => v && v !== '');
-
-  if (collapsed) return (
-    <div className="w-10 bg-white border-r border-gray-100 flex flex-col items-center py-4 gap-3">
-      <button onClick={onToggle} className="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
-        <ChevronRight className="w-4 h-4" />
-      </button>
-      <Filter className="w-4 h-4 text-gray-300" />
-    </div>
-  );
-
+function Section({ label, children }) {
   return (
-    <div className="w-64 bg-white border-r border-gray-100 flex flex-col h-full overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-        <div className="flex items-center gap-2">
-          <Filter className="w-4 h-4 text-blue-500" />
-          <span className="text-sm font-bold text-gray-800">Filtri</span>
-          {hasFilters && <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[10px] flex items-center justify-center font-bold">
-            {Object.values(local).filter(v => v && v !== '').length}
-          </span>}
-        </div>
-        <button onClick={onToggle} className="p-1 rounded-lg hover:bg-gray-100 text-gray-400">
-          <ChevronLeft className="w-4 h-4" />
-        </button>
-      </div>
-
-      {/* Filtri */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-
-        {/* Anno */}
-        <div>
-          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">Anno</label>
-          <div className="flex gap-1">
-            {['tutti', ...ANNI].map(a => (
-              <button key={a} onClick={() => set('anno', a === 'tutti' ? '' : a)}
-                className={`flex-1 py-1 rounded-lg text-xs font-medium border transition-colors ${local.anno === (a === 'tutti' ? '' : a) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-500 border-gray-200 hover:border-blue-300'}`}>
-                {a === 'tutti' ? 'Tutti' : a}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Mese */}
-        {mesi26.length > 0 && (
-          <div>
-            <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">Mese</label>
-            <select value={local.mese || ''} onChange={e => set('mese', e.target.value)}
-              className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500">
-              <option value="">Tutti i mesi</option>
-              {mesi26.map(m => <option key={m} value={m}>{MESI[m]}</option>)}
-            </select>
-          </div>
-        )}
-
-        {/* Area RAC */}
-        <div>
-          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">Area RAC</label>
-          <div className="flex flex-wrap gap-1">
-            {AREAS.map(a => (
-              <button key={a} onClick={() => set('area_rac', local.area_rac === a ? '' : a)}
-                className={`px-2 py-0.5 rounded text-[10px] font-medium border transition-colors ${local.area_rac === a ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-500 border-gray-200 hover:border-blue-300'}`}>
-                {a}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* LOB */}
-        <div>
-          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">LOB</label>
-          <div className="flex flex-wrap gap-1">
-            {['Cloud','Connettività','IoT','Other IT','Licensing','Security'].map(l => (
-              <button key={l} onClick={() => set('lob', local.lob === l ? '' : l)}
-                className={`px-2 py-0.5 rounded text-[10px] font-medium border transition-colors ${local.lob === l ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-500 border-gray-200 hover:border-orange-300'}`}>
-                {l}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Attacco/Difesa */}
-        <div>
-          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">Tipo</label>
-          <div className="flex gap-1">
-            {['','Attacco','Difesa'].map(t => (
-              <button key={t} onClick={() => set('attacco_difesa', t)}
-                className={`flex-1 py-1 rounded-lg text-xs font-medium border transition-colors ${local.attacco_difesa === t ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-500 border-gray-200 hover:border-green-300'}`}>
-                {t || 'Tutti'}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Divider — filtri anagrafica */}
-        <div className="border-t border-gray-100 pt-3">
-          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">Da Anagrafica</p>
-        </div>
-
-        {/* RAC 26 */}
-        <div>
-          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">RAC 26</label>
-          <select value={local.rac_26 || ''} onChange={e => set('rac_26', e.target.value)}
-            className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">Tutti i RAC</option>
-            {uniq('rac_26').map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </div>
-
-        {/* Area AM 26 */}
-        <div>
-          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">Area AM 26</label>
-          <select value={local.area_am_26 || ''} onChange={e => set('area_am_26', e.target.value)}
-            className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">Tutte le aree AM</option>
-            {uniq('area_am_26').map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </div>
-
-        {/* Area MNG 26 */}
-        <div>
-          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">Area MNG 26</label>
-          <select value={local.area_mng_26 || ''} onChange={e => set('area_mng_26', e.target.value)}
-            className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">Tutte le aree MNG</option>
-            {uniq('area_mng_26').map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </div>
-
-        {/* Struttura Sales Core 26 */}
-        <div>
-          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">Struttura Sales Core</label>
-          <select value={local.struttura_sales_26 || ''} onChange={e => set('struttura_sales_26', e.target.value)}
-            className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">Tutte</option>
-            {uniq('struttura_sales_26').map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </div>
-
-        {/* Area MNG Spec */}
-        <div>
-          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">Area MNG Spec</label>
-          <select value={local.area_mng_spec_26 || ''} onChange={e => set('area_mng_spec_26', e.target.value)}
-            className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">Tutte</option>
-            {uniq('area_mng_spec_26').map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </div>
-
-        {/* Specialist LSS */}
-        <div>
-          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">Specialist LSS</label>
-          <select value={local.specialist_lss || ''} onChange={e => set('specialist_lss', e.target.value)}
-            className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">Tutti</option>
-            {uniq('acc_specialist_lss').map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </div>
-
-        {/* Specialist SEC */}
-        <div>
-          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">Specialist SEC</label>
-          <select value={local.specialist_sec || ''} onChange={e => set('specialist_sec', e.target.value)}
-            className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">Tutti</option>
-            {uniq('acc_specialist_sec').map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </div>
-
-        {/* Specialist Cloud/IoT/5G */}
-        <div>
-          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">Specialist Cloud/IoT/5G</label>
-          <select value={local.specialist_cloud || ''} onChange={e => set('specialist_cloud', e.target.value)}
-            className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">Tutti</option>
-            {uniq('acc_specialist_cloud_iot_5g').map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </div>
-
-        {/* IoT */}
-        <div>
-          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block mb-1.5">IoT Specialist</label>
-          <select value={local.iot || ''} onChange={e => set('iot', e.target.value)}
-            className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">Tutti</option>
-            {uniq('iot').map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </div>
-
-      </div>
-
-      {/* Footer */}
-      <div className="p-4 border-t border-gray-100 space-y-2">
-        <button onClick={() => onApply(local)}
-          className="w-full py-2 bg-blue-600 text-white text-sm font-bold rounded-xl hover:bg-blue-700 transition-colors">
-          Applica filtri
-        </button>
-        {hasFilters && (
-          <button onClick={() => { const empty = Object.fromEntries(Object.keys(local).map(k => [k, ''])); setLocal(empty); onReset(); }}
-            className="w-full py-1.5 text-xs text-red-500 border border-red-200 rounded-xl hover:bg-red-50 transition-colors">
-            Rimuovi tutti i filtri
-          </button>
-        )}
-      </div>
+    <div>
+      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">{label}</p>
+      {children}
     </div>
   );
 }
 
-function InlineKPI({ label, value, delta, color = 'gray', small = false }) {
-  const colors = { blue: 'text-blue-400', green: 'text-green-400', red: 'text-red-400', orange: 'text-orange-400', purple: 'text-purple-400', gray: 'text-gray-300' };
+function FilterSidebar({ portafoglio, aggregati, filters, onChange, onReset, collapsed, onToggle }) {
+  const uniq = (field) => [...new Set(portafoglio.map(c => c[field]).filter(Boolean))].sort();
+  const mesi26 = (aggregati?.['2026']?.byMese || []).map(m => m.mese).sort((a,b)=>a-b);
+  const activeCount = Object.values(filters).filter(Boolean).length;
+
+  if (collapsed) return (
+    <div className="w-10 bg-white border-r border-gray-100 flex flex-col items-center py-4 gap-3 flex-shrink-0">
+      <button onClick={onToggle} className="p-2 rounded-lg hover:bg-gray-100 text-gray-500"><ChevronRight className="w-4 h-4" /></button>
+      <Filter className="w-4 h-4 text-gray-300" />
+      {activeCount > 0 && <span className="w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] flex items-center justify-center font-bold">{activeCount}</span>}
+    </div>
+  );
+
+  const sel = (key, placeholder, field) => (
+    <select value={filters[key]||''} onChange={e => onChange(key, e.target.value)}
+      className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
+      <option value="">{placeholder}</option>
+      {uniq(field||key).map(v => <option key={v} value={v}>{v}</option>)}
+    </select>
+  );
+
+  return (
+    <div className="w-60 bg-white border-r border-gray-100 flex flex-col flex-shrink-0" style={{height:'100%'}}>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <Filter className="w-4 h-4 text-blue-500" />
+          <span className="text-sm font-bold text-gray-800">Filtri</span>
+          {activeCount > 0 && <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[10px] flex items-center justify-center font-bold">{activeCount}</span>}
+        </div>
+        <button onClick={onToggle} className="p-1 rounded-lg hover:bg-gray-100 text-gray-400"><ChevronLeft className="w-4 h-4" /></button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <Section label="Anno">
+          <div className="flex gap-1">
+            {['', ...ANNI].map(a => (
+              <button key={a} onClick={() => onChange('anno', a)}
+                className={`flex-1 py-1 rounded-lg text-[10px] font-semibold border transition-colors ${filters.anno===a?'bg-blue-600 text-white border-blue-600':'bg-white text-gray-500 border-gray-200 hover:border-blue-300'}`}>
+                {a||'Tutti'}
+              </button>
+            ))}
+          </div>
+        </Section>
+
+        {mesi26.length > 0 && (
+          <Section label="Mese">
+            <select value={filters.mese||''} onChange={e=>onChange('mese',e.target.value)}
+              className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400">
+              <option value="">Tutti i mesi</option>
+              {mesi26.map(m=><option key={m} value={m}>{MESI[m]}</option>)}
+            </select>
+          </Section>
+        )}
+
+        <Section label="Area RAC">
+          <div className="flex flex-wrap gap-1">
+            {AREAS.map(a => (
+              <button key={a} onClick={() => onChange('area_rac', filters.area_rac===a?'':a)}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors ${filters.area_rac===a?'bg-blue-600 text-white border-blue-600':'bg-white text-gray-500 border-gray-200 hover:border-blue-300'}`}>
+                {a}
+              </button>
+            ))}
+          </div>
+        </Section>
+
+        <Section label="LOB">
+          <div className="flex flex-wrap gap-1">
+            {['Cloud','Connettività','IoT','Other IT','Licensing','Security'].map(l => (
+              <button key={l} onClick={() => onChange('lob', filters.lob===l?'':l)}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-colors ${filters.lob===l?'bg-orange-500 text-white border-orange-500':'bg-white text-gray-500 border-gray-200 hover:border-orange-300'}`}>
+                {l}
+              </button>
+            ))}
+          </div>
+        </Section>
+
+        <Section label="Attacco / Difesa">
+          <div className="flex gap-1">
+            {[['','Tutti'],['Attacco','Att'],['Difesa','Dif']].map(([v,l]) => (
+              <button key={v} onClick={() => onChange('attacco_difesa', v)}
+                className={`flex-1 py-1 rounded-lg text-[10px] font-semibold border transition-colors ${filters.attacco_difesa===v?'bg-green-600 text-white border-green-600':'bg-white text-gray-500 border-gray-200 hover:border-green-300'}`}>
+                {l}
+              </button>
+            ))}
+          </div>
+        </Section>
+
+        <div className="border-t border-dashed border-blue-200 pt-3">
+          <p className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-3 flex items-center gap-1">
+            <BarChart2 className="w-3 h-3" /> Da Anagrafica
+          </p>
+        </div>
+
+        <Section label="RAC 26">{sel('rac_26','Tutti i RAC','rac_26')}</Section>
+        <Section label="Area AM 26">{sel('area_am_26','Tutte','area_am_26')}</Section>
+        <Section label="Area MNG 26">{sel('area_mng_26','Tutte','area_mng_26')}</Section>
+        <Section label="Struttura Sales Core">{sel('struttura_sales_26','Tutte','struttura_sales_26')}</Section>
+        <Section label="Area MNG Spec">{sel('area_mng_spec_26','Tutte','area_mng_spec_26')}</Section>
+        <Section label="Specialist LSS">{sel('specialist_lss','Tutti','acc_specialist_lss')}</Section>
+        <Section label="Specialist SEC">{sel('specialist_sec','Tutti','acc_specialist_sec')}</Section>
+        <Section label="Specialist Cloud/IoT/5G">{sel('specialist_cloud','Tutti','acc_specialist_cloud_iot_5g')}</Section>
+        <Section label="IoT Specialist">{sel('iot','Tutti','iot')}</Section>
+      </div>
+
+      {Object.values(filters).some(Boolean) && (
+        <div className="p-4 border-t border-gray-100 flex-shrink-0">
+          <button onClick={onReset} className="w-full py-1.5 text-xs text-red-500 border border-red-200 rounded-xl hover:bg-red-50">
+            Rimuovi tutti i filtri
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InlineKPI({ label, value, delta, color='gray', small=false }) {
+  const colors = { blue:'text-blue-400', green:'text-green-400', red:'text-red-400', orange:'text-orange-400', purple:'text-purple-400', gray:'text-gray-300' };
   return (
     <div className="flex flex-col">
       <span className="text-xs text-gray-400 font-medium mb-0.5">{label}</span>
-      <span className={`${small ? 'text-lg' : 'text-2xl'} font-black ${colors[color]} leading-none`}>{value}</span>
-      {delta !== null && delta !== undefined && (
-        <span className={`text-xs font-semibold mt-0.5 ${delta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-          {delta >= 0 ? '▲' : '▼'} {Math.abs(delta).toFixed(1)}% YoY
+      <span className={`${small?'text-lg':'text-2xl'} font-black ${colors[color]} leading-none`}>{value}</span>
+      {delta!==null&&delta!==undefined&&(
+        <span className={`text-xs font-semibold mt-0.5 ${delta>=0?'text-green-400':'text-red-400'}`}>
+          {delta>=0?'▲':'▼'} {Math.abs(delta).toFixed(1)}% YoY
         </span>
       )}
     </div>
   );
 }
 
-function AreaRow({ area, d24, d25, d26 }) {
-  const s24 = d24?.serv || 0, s25 = d25?.serv || 0, s26 = d26?.serv || 0;
-  if (!s24 && !s25 && !s26) return null;
-  const diff = s26 - s25;
-  const varPct = s25 > 0 ? (diff / s25 * 100) : null;
-  const maxVal = Math.max(s24, s25, s26, 1);
-  return (
-    <tr className="border-b border-gray-50 hover:bg-blue-50/30 transition-colors group">
-      <td className="py-2 pr-3"><span className="inline-block px-2 py-0.5 rounded-md bg-gray-100 text-xs font-bold text-gray-700">{area}</span></td>
-      <td className="py-2 text-right text-gray-400 text-xs">{s24 > 0 ? fmt(s24) : '—'}</td>
-      <td className="py-2 text-right text-xs text-gray-600">{s25 > 0 ? fmt(s25) : '—'}</td>
-      <td className="py-2 text-right">
-        <span className="text-sm font-bold text-gray-800">{s26 > 0 ? fmt(s26) : '—'}</span>
-        <div className="h-1 rounded-full bg-gray-100 mt-0.5">
-          <div className={`h-1 rounded-full ${diff >= 0 ? 'bg-blue-500' : 'bg-red-400'}`} style={{ width: `${s26/maxVal*100}%` }} />
-        </div>
-      </td>
-      <td className={`py-2 text-right text-sm font-semibold ${diff >= 0 ? 'text-green-600' : 'text-red-500'}`}>{fmt(diff)}</td>
-      <td className={`py-2 text-right text-xs font-bold ${varPct === null ? 'text-gray-300' : varPct >= 0 ? 'text-green-600' : 'text-red-500'}`}>{varPct === null ? '—' : fmtPct(varPct)}</td>
-      <td className="py-2 text-right text-xs text-gray-400">{(d24?.n||0)+(d25?.n||0)+(d26?.n||0)}</td>
-    </tr>
-  );
-}
-
-function Skeleton({ className }) { return <div className={`animate-pulse bg-gray-200 rounded-xl ${className}`} />; }
-
 // ─── MAIN ─────────────────────────────────────────────────────────
 export default function Dashboard() {
-  const { aggregati, loading, hasAggregati, reload } = useData();
+  const {
+    aggregati, loading, hasAggregati, reload,
+    deals, allDeals, dealsLoading, dealsReady, dealsProgress, allReady,
+    portafoglio, portafoglioMap,
+  } = useData();
 
-  // Portafoglio clienti per filtri anagrafica
-  const [portafoglio, setPortafoglio] = useState([]);
-  const [portafoglioMap, setPortafoglioMap] = useState({}); // ragione_sociale → record
-
-  // Filtri
-  const EMPTY_FILTERS = { anno: '', mese: '', area_rac: '', lob: '', attacco_difesa: '', rac_26: '', area_am_26: '', area_mng_26: '', struttura_sales_26: '', area_mng_spec_26: '', specialist_lss: '', specialist_sec: '', specialist_cloud: '', iot: '' };
-  const [appliedFilters, setAppliedFilters] = useState(EMPTY_FILTERS);
+  const [filters, setFilters] = useState(EMPTY);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [aggregating, setAggregating] = useState(false);
 
-  useEffect(() => {
-    loadPortafoglio();
-  }, []);
+  const hasAnyFilter = Object.values(filters).some(Boolean);
+  const hasAnagraficaFilter = ANAGRAFICA_KEYS.some(k => filters[k]);
 
-  const loadPortafoglio = async () => {
-    try {
-      const snap = await getDocs(collection(db, 'portafoglio_clienti'));
-      const docs = snap.docs.map(d => d.data());
-      setPortafoglio(docs);
-      // Mappa ragione_sociale → record portafoglio
-      const map = {};
-      docs.forEach(c => {
-        if (c.ragione_sociale) map[c.ragione_sociale.toLowerCase().trim()] = c;
-        if (c.capogruppo) map[c.capogruppo.toLowerCase().trim()] = c;
-      });
-      setPortafoglioMap(map);
-    } catch (e) { console.error(e); }
-  };
+  const onChange = (key, val) => setFilters(prev => ({ ...prev, [key]: val }));
+  const onReset = () => setFilters(EMPTY);
 
-  // Arricchisce i deal con i dati del portafoglio
-  const enrichDeal = (deal) => {
-    const key = (deal.ragione_sociale_capogruppo || deal.ragione_sociale || '').toLowerCase().trim();
-    const ptf = portafoglioMap[key];
-    return ptf ? { ...deal, _ptf: ptf } : deal;
-  };
+  // Filtra i deal in base a tutti i filtri — istantaneo dalla memoria
+  const filteredDeals = useMemo(() => {
+    if (!hasAnyFilter) return allDeals;
+    const f = filters;
+    return allDeals.filter(d => {
+      if (f.anno && d.anno !== f.anno) return false;
+      if (f.mese && String(d.mese) !== String(f.mese)) return false;
+      if (f.area_rac && d.area_rac !== f.area_rac) return false;
+      if (f.lob && d.lob !== f.lob) return false;
+      if (f.attacco_difesa && d.attacco_difesa !== f.attacco_difesa) return false;
+      // Filtri anagrafica — join con portafoglio
+      if (hasAnagraficaFilter) {
+        const key = (d.ragione_sociale_capogruppo || d.ragione_sociale || '').toLowerCase().trim();
+        const ptf = portafoglioMap[key] || {};
+        if (f.rac_26 && ptf.rac_26 !== f.rac_26) return false;
+        if (f.area_am_26 && ptf.area_am_26 !== f.area_am_26) return false;
+        if (f.area_mng_26 && ptf.area_mng_26 !== f.area_mng_26) return false;
+        if (f.struttura_sales_26 && ptf.struttura_sales_26 !== f.struttura_sales_26) return false;
+        if (f.area_mng_spec_26 && ptf.area_mng_spec_26 !== f.area_mng_spec_26) return false;
+        if (f.specialist_lss && ptf.acc_specialist_lss !== f.specialist_lss) return false;
+        if (f.specialist_sec && ptf.acc_specialist_sec !== f.specialist_sec) return false;
+        if (f.specialist_cloud && ptf.acc_specialist_cloud_iot_5g !== f.specialist_cloud) return false;
+        if (f.iot && ptf.iot !== f.iot) return false;
+      }
+      return true;
+    });
+  }, [allDeals, filters, hasAnyFilter, hasAnagraficaFilter, portafoglioMap]);
 
-  // Applica filtri agli aggregati
-  const computeFilteredKPI = useMemo(() => {
-    if (!aggregati) return null;
-    const f = appliedFilters;
-    const hasAnagraficaFilter = f.rac_26 || f.area_am_26 || f.area_mng_26 || f.struttura_sales_26 || f.area_mng_spec_26 || f.specialist_lss || f.specialist_sec || f.specialist_cloud || f.iot;
-
-    // Se non ci sono filtri anagrafica, usa aggregati diretti
-    if (!hasAnagraficaFilter && !f.anno && !f.mese && !f.area_rac && !f.lob && !f.attacco_difesa) {
+  // KPI calcolati dai deal filtrati (o dagli aggregati se nessun filtro)
+  const kpiData = useMemo(() => {
+    if (!hasAnyFilter && aggregati) {
+      // Usa aggregati pre-calcolati
       return {
-        useAggregati: true,
-        ag24: aggregati['2024'],
-        ag25: aggregati['2025'],
-        ag26: aggregati['2026'],
+        source: 'aggregati',
+        kpi: { '2024': aggregati['2024']?.kpi, '2025': aggregati['2025']?.kpi, '2026': aggregati['2026']?.kpi },
+        byLob: aggregati['2026']?.byLob || [],
+        topClienti: aggregati['2026']?.topClienti || [],
+        byArea: null,
       };
     }
+    if (!allReady && hasAnagraficaFilter) return null; // aspetta raw deals
 
-    // Con filtri, dobbiamo filtrare i clienti del portafoglio e restituire un set filtrato
-    let clientiAmmessi = null;
-    if (hasAnagraficaFilter) {
-      clientiAmmessi = new Set(
-        portafoglio
-          .filter(c =>
-            (!f.rac_26 || c.rac_26 === f.rac_26) &&
-            (!f.area_am_26 || c.area_am_26 === f.area_am_26) &&
-            (!f.area_mng_26 || c.area_mng_26 === f.area_mng_26) &&
-            (!f.struttura_sales_26 || c.struttura_sales_26 === f.struttura_sales_26) &&
-            (!f.area_mng_spec_26 || c.area_mng_spec_26 === f.area_mng_spec_26) &&
-            (!f.specialist_lss || c.acc_specialist_lss === f.specialist_lss) &&
-            (!f.specialist_sec || c.acc_specialist_sec === f.specialist_sec) &&
-            (!f.specialist_cloud || c.acc_specialist_cloud_iot_5g === f.specialist_cloud) &&
-            (!f.iot || c.iot === f.iot)
-          )
-          .flatMap(c => [c.ragione_sociale?.toLowerCase().trim(), c.capogruppo?.toLowerCase().trim()])
-          .filter(Boolean)
-      );
-    }
+    // Calcola da raw deals
+    const byAnno = {};
+    ANNI.forEach(anno => {
+      const d = filteredDeals.filter(x => x.anno === anno);
+      byAnno[anno] = computeKPI(d);
+    });
 
-    return { useAggregati: false, clientiAmmessi, filters: f };
-  }, [aggregati, appliedFilters, portafoglio, portafoglioMap]);
+    const d26 = filteredDeals.filter(x => x.anno === '2026');
 
-  // KPI da usare (aggregati o filtrati)
-  const getKpi = (anno) => {
-    if (!computeFilteredKPI) return null;
-    if (computeFilteredKPI.useAggregati) {
-      const ag = computeFilteredKPI[`ag${anno.slice(2)}`] || aggregati?.[anno];
-      if (!ag) return null;
-      const f = appliedFilters;
-      if (f.area_rac) {
-        const a = ag.byArea?.find(x => x.area === f.area_rac);
-        return a ? { serv: a.serv, canoni: a.canoni, diff: a.diff, att: a.att, dif: a.dif, n: a.n } : null;
-      }
-      if (f.lob) {
-        const l = ag.byLob?.find(x => x.lob === f.lob);
-        return l ? { serv: l.serv, canoni: l.canoni, diff: 0, att: 0, dif: 0, n: l.n } : null;
-      }
-      return ag.kpi;
-    }
-    // Con filtri anagrafica — non possiamo usare aggregati, mostriamo indicazione
-    return null;
-  };
+    // byLob
+    const lobMap = {};
+    d26.forEach(d => {
+      const k = d.lob||'N/D';
+      if (!lobMap[k]) lobMap[k] = { lob:k, serv:0, canoni:0, n:0 };
+      lobMap[k].serv += d.serv_i_anno||0;
+      lobMap[k].canoni += d.canoni||0;
+      lobMap[k].n++;
+    });
 
-  const ag24kpi = getKpi('2024');
-  const ag25kpi = getKpi('2025');
-  const ag26kpi = getKpi('2026');
-  const delta2625 = pct(ag26kpi?.serv, ag25kpi?.serv);
-  const delta2524 = pct(ag25kpi?.serv, ag24kpi?.serv);
+    // topClienti
+    const cMap = {};
+    d26.forEach(d => {
+      const k = d.ragione_sociale_capogruppo||d.ragione_sociale||'N/D';
+      if (!cMap[k]) cMap[k] = { nome:k, area:d.area_rac||'', serv:0, canoni:0, diff:0, n:0 };
+      cMap[k].serv += d.serv_i_anno||0;
+      cMap[k].canoni += d.canoni||0;
+      cMap[k].diff += d.differenziale_servizi||0;
+      cMap[k].n++;
+    });
 
+    // byArea per grafico
+    const areaMap = {};
+    filteredDeals.forEach(d => {
+      const area = d.area_rac||'N/D';
+      const anno = d.anno;
+      if (!areaMap[area]) areaMap[area] = { area_rac: area };
+      areaMap[area][`serv_${anno}`] = (areaMap[area][`serv_${anno}`]||0) + (d.serv_i_anno||0);
+      areaMap[area][`diff_${anno}`] = (areaMap[area][`diff_${anno}`]||0) + (d.differenziale_servizi||0);
+      areaMap[area][`canoni_${anno}`] = (areaMap[area][`canoni_${anno}`]||0) + (d.canoni||0);
+    });
+
+    return {
+      source: 'raw',
+      kpi: byAnno,
+      byLob: Object.values(lobMap).sort((a,b)=>b.serv-a.serv),
+      topClienti: Object.values(cMap).sort((a,b)=>b.serv-a.serv).slice(0,20),
+      byArea: Object.values(areaMap),
+    };
+  }, [filteredDeals, aggregati, hasAnyFilter, hasAnagraficaFilter, allReady]);
+
+  // byAreaData per grafici
   const byAreaData = useMemo(() => {
+    if (kpiData?.byArea) return kpiData.byArea;
     if (!aggregati) return [];
-    const areas = [...new Set(ANNI.flatMap(a => aggregati[a]?.byArea?.map(x => x.area) || []))];
+    const areas = [...new Set(ANNI.flatMap(a => aggregati[a]?.byArea?.map(x=>x.area)||[]))];
     return areas.map(area => ({
       area_rac: area,
       ...Object.fromEntries(ANNI.flatMap(anno => {
-        const ag = aggregati[anno];
-        const a = ag?.byArea?.find(x => x.area === area);
-        return [[`serv_${anno}`, a?.serv||0], [`diff_${anno}`, a?.diff||0], [`canoni_${anno}`, a?.canoni||0]];
+        const a = aggregati[anno]?.byArea?.find(x=>x.area===area);
+        return [[`serv_${anno}`,a?.serv||0],[`diff_${anno}`,a?.diff||0],[`canoni_${anno}`,a?.canoni||0]];
       }))
     }));
-  }, [aggregati]);
+  }, [kpiData, aggregati]);
 
-  const byLobData26 = useMemo(() => aggregati?.['2026']?.byLob?.sort((a,b)=>b.serv-a.serv)||[], [aggregati]);
+  const ag26 = kpiData?.kpi?.['2026'];
+  const ag25 = kpiData?.kpi?.['2025'];
+  const ag24 = kpiData?.kpi?.['2024'];
+  const delta2625 = pct(ag26?.serv, ag25?.serv);
+  const delta2524 = pct(ag25?.serv, ag24?.serv);
 
-  const hasAnagraficaFilter = Object.entries(appliedFilters).some(([k,v]) => v && ['rac_26','area_am_26','area_mng_26','struttura_sales_26','area_mng_spec_26','specialist_lss','specialist_sec','specialist_cloud','iot'].includes(k));
-  const hasAnyFilter = Object.values(appliedFilters).some(v => v && v !== '');
+  const byLob26 = kpiData?.byLob || [];
+  const topClienti = kpiData?.topClienti || [];
 
   const triggerAggregation = async () => {
     setAggregating(true);
@@ -432,16 +329,14 @@ export default function Dashboard() {
       const fn = httpsCallable(functionsInstance, 'aggregateDeals');
       await fn({});
       await reload();
-    } catch (e) { console.error(e); }
+    } catch(e) { console.error(e); }
     setAggregating(false);
   };
 
   if (loading) return (
     <div className="flex h-full">
-      <div className="w-64 bg-white border-r border-gray-100 animate-pulse" />
-      <div className="flex-1 p-6 space-y-4">
-        {[...Array(5)].map((_, i) => <Skeleton key={i} className="h-20" />)}
-      </div>
+      <div className="w-60 bg-white border-r border-gray-100 animate-pulse flex-shrink-0" />
+      <div className="flex-1 p-6 space-y-4">{[...Array(5)].map((_,i)=><div key={i} className="h-20 bg-gray-200 rounded-xl animate-pulse" />)}</div>
     </div>
   );
 
@@ -451,155 +346,151 @@ export default function Dashboard() {
       <h2 className="text-lg font-bold text-gray-700">Aggregati non disponibili</h2>
       <button onClick={triggerAggregation} disabled={aggregating}
         className="px-6 py-3 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50">
-        {aggregating ? 'Calcolo...' : '⚡ Calcola aggregati'}
+        {aggregating?'Calcolo...':'⚡ Calcola aggregati'}
       </button>
     </div>
   );
 
   return (
-    <div className="flex h-full bg-gray-50 overflow-hidden">
-
-      {/* Sidebar */}
+    <div className="flex bg-gray-50 overflow-hidden" style={{height:'100vh'}}>
       <FilterSidebar
-        aggregati={aggregati}
         portafoglio={portafoglio}
-        filters={appliedFilters}
-        onChange={() => {}}
-        onApply={(f) => setAppliedFilters(f)}
-        onReset={() => setAppliedFilters(EMPTY_FILTERS)}
+        aggregati={aggregati}
+        filters={filters}
+        onChange={onChange}
+        onReset={onReset}
         collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed(v => !v)}
+        onToggle={() => setSidebarCollapsed(v=>!v)}
       />
 
-      {/* Main content */}
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
 
         {/* Header */}
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-black text-gray-900 tracking-tight">Business Intelligence</h1>
-            <p className="text-sm text-gray-400 mt-0.5">
+            <p className="text-sm text-gray-400 mt-0.5 flex items-center gap-2">
               Portafoglio 2024 · 2025 · 2026
-              {hasAnyFilter && <span className="ml-2 text-blue-500 font-semibold">· Filtri attivi</span>}
-              {hasAnagraficaFilter && <span className="ml-1 text-amber-500 text-xs">(KPI da calcolare su dati raw)</span>}
+              {kpiData?.source==='raw' && <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-semibold">Raw · {filteredDeals.length.toLocaleString('it-IT')} deal</span>}
+              {!allReady && (
+                <span className="text-xs text-gray-400 flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  {ANNI.map(a => !dealsReady[a] && dealsLoading[a] ? `${a}: ${(dealsProgress[a]||0).toLocaleString('it-IT')}...` : null).filter(Boolean).join(' ')}
+                </span>
+              )}
             </p>
           </div>
           <div className="flex gap-2">
             {hasAnyFilter && (
-              <button onClick={() => setAppliedFilters(EMPTY_FILTERS)}
-                className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl border border-red-200 bg-red-50 text-red-600 hover:bg-red-100">
+              <button onClick={onReset} className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl border border-red-200 bg-red-50 text-red-600 hover:bg-red-100">
                 <X className="w-3.5 h-3.5" /> Rimuovi filtri
               </button>
             )}
             <button onClick={triggerAggregation} disabled={aggregating}
               className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 text-gray-600">
-              {aggregating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
-              {aggregating ? 'Aggiornamento...' : 'Aggiorna'}
+              {aggregating?<RefreshCw className="w-3.5 h-3.5 animate-spin"/>:<Zap className="w-3.5 h-3.5"/>}
+              Aggiorna
             </button>
           </div>
         </div>
 
-        {/* Filtri attivi chips */}
+        {/* Chips filtri attivi */}
         {hasAnyFilter && (
           <div className="flex flex-wrap gap-1.5">
-            {Object.entries(appliedFilters).filter(([,v]) => v).map(([k, v]) => (
+            {Object.entries(filters).filter(([,v])=>v).map(([k,v])=>(
               <span key={k} className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-blue-50 border border-blue-200 text-xs text-blue-700 font-medium">
-                <span className="text-blue-400 capitalize">{k.replace(/_/g,' ')}:</span> {v}
-                <button onClick={() => setAppliedFilters(prev => ({ ...prev, [k]: '' }))} className="hover:text-red-500"><X className="w-3 h-3" /></button>
+                <span className="text-blue-400">{k.replace(/_/g,' ')}:</span>{v}
+                <button onClick={()=>onChange(k,'')} className="hover:text-red-500 ml-0.5"><X className="w-3 h-3"/></button>
               </span>
             ))}
           </div>
         )}
 
+        {/* Avviso raw not ready */}
+        {hasAnagraficaFilter && !allReady && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center gap-3">
+            <Loader2 className="w-5 h-5 animate-spin text-amber-500 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-amber-700">Caricamento dati in corso...</p>
+              <p className="text-xs text-amber-500">I KPI si aggiorneranno appena i dati raw sono pronti</p>
+            </div>
+          </div>
+        )}
+
         {/* KPI Hero */}
-        {ag26kpi && (
+        {ag26 && (
           <div className="bg-gradient-to-r from-gray-900 to-gray-800 rounded-2xl p-5 text-white shadow-lg">
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 divide-x divide-white/10">
-              <InlineKPI label="Portafoglio 2026" value={fmt(ag26kpi?.serv)} delta={delta2625} color="blue" />
-              <div className="pl-4"><InlineKPI label="Portafoglio 2025" value={fmt(ag25kpi?.serv)} delta={delta2524} color="purple" /></div>
-              <div className="pl-4"><InlineKPI label="Portafoglio 2024" value={fmt(ag24kpi?.serv)} color="gray" /></div>
-              <div className="pl-4"><InlineKPI label="Differenziale 2026" value={fmt(ag26kpi?.diff)} color={(ag26kpi?.diff||0)>=0?'green':'red'} /></div>
+              <InlineKPI label="Portafoglio 2026" value={fmt(ag26?.serv)} delta={delta2625} color="blue" />
+              <div className="pl-4"><InlineKPI label="Portafoglio 2025" value={fmt(ag25?.serv)} delta={delta2524} color="purple" /></div>
+              <div className="pl-4"><InlineKPI label="Portafoglio 2024" value={fmt(ag24?.serv)} color="gray" /></div>
+              <div className="pl-4"><InlineKPI label="Differenziale 2026" value={fmt(ag26?.diff)} color={(ag26?.diff||0)>=0?'green':'red'} /></div>
               <div className="pl-4">
-                <InlineKPI label="Deal totali" value={((ag24kpi?.n||0)+(ag25kpi?.n||0)+(ag26kpi?.n||0)).toLocaleString('it-IT')} color="orange" small />
+                <InlineKPI label="Deal totali" value={((ag24?.n||0)+(ag25?.n||0)+(ag26?.n||0)).toLocaleString('it-IT')} color="orange" small />
+                <span className="text-[10px] text-white/40 mt-1 block">{ag24?.n||0} '24 · {ag25?.n||0} '25 · {ag26?.n||0} '26</span>
               </div>
             </div>
           </div>
         )}
 
-        {hasAnagraficaFilter && !ag26kpi && (
-          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-sm text-amber-700">
-            ⚠️ I filtri per RAC/Specialist richiedono il calcolo sui dati raw. I KPI mostrati sono quelli globali.
-            Vai su <strong>Dettaglio</strong> per vedere i dati filtrati per questi campi.
-          </div>
-        )}
-
         {/* KPI Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-          <KPICard title="Portafoglio 2026" value={fmt(ag26kpi?.serv)} sub={`${ag26kpi?.n||0} deal`} delta={delta2625} icon={Euro} color="blue" />
-          <KPICard title="Portafoglio 2025" value={fmt(ag25kpi?.serv)} sub={`${ag25kpi?.n||0} deal`} icon={Euro} color="purple" />
-          <KPICard title="Portafoglio 2024" value={fmt(ag24kpi?.serv)} sub={`${ag24kpi?.n||0} deal`} icon={Euro} color="gray" />
-          <KPICard title="Differenziale 2026" value={fmt(ag26kpi?.diff)} sub="vs anno precedente" icon={(ag26kpi?.diff||0)>=0?TrendingUp:TrendingDown} color={(ag26kpi?.diff||0)>=0?'green':'orange'} />
-          <KPICard title="Canoni 2026" value={fmt(ag26kpi?.canoni)} sub={`vs ${fmt(ag25kpi?.canoni)} 2025`} icon={FileText} color="orange" />
+          <KPICard title="Portafoglio 2026" value={fmt(ag26?.serv)} sub={`${ag26?.n||0} deal`} delta={delta2625} icon={Euro} color="blue" />
+          <KPICard title="Portafoglio 2025" value={fmt(ag25?.serv)} sub={`${ag25?.n||0} deal`} icon={Euro} color="purple" />
+          <KPICard title="Portafoglio 2024" value={fmt(ag24?.serv)} sub={`${ag24?.n||0} deal`} icon={Euro} color="gray" />
+          <KPICard title="Differenziale 2026" value={fmt(ag26?.diff)} sub="vs anno precedente" icon={(ag26?.diff||0)>=0?TrendingUp:TrendingDown} color={(ag26?.diff||0)>=0?'green':'orange'} />
+          <KPICard title="Canoni 2026" value={fmt(ag26?.canoni)} sub={`vs ${fmt(ag25?.canoni)} 2025`} icon={FileText} color="orange" />
         </div>
 
-        <KPIAlertBanner values={{ diff_2026: ag26kpi?.diff, ytd_2026: ag26kpi?.serv, diff_2025: ag25kpi?.diff }} />
+        <KPIAlertBanner values={{ diff_2026:ag26?.diff, ytd_2026:ag26?.serv, diff_2025:ag25?.diff }} />
 
-        {/* Mix cards */}
+        {/* Mix */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Canoni */}
           <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-sm">
             <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">Canoni per Anno</h3>
             <div className="space-y-3">
               {ANNI.map(a => {
-                const kpi = getKpi(a);
-                const maxC = Math.max(...ANNI.map(x => getKpi(x)?.canoni||0), 1);
-                return (
-                  <div key={a}>
-                    <div className="flex justify-between text-xs mb-1"><span className="text-gray-500 font-medium">{a}</span><span className="font-bold text-gray-800">{fmt(kpi?.canoni||0)}</span></div>
-                    <div className="h-1.5 rounded-full bg-gray-100"><div className={`h-1.5 rounded-full ${a==='2026'?'bg-blue-500':a==='2025'?'bg-purple-400':'bg-gray-400'}`} style={{width:`${(kpi?.canoni||0)/maxC*100}%`}} /></div>
-                  </div>
-                );
+                const k = kpiData?.kpi?.[a];
+                const maxC = Math.max(...ANNI.map(x=>kpiData?.kpi?.[x]?.canoni||0),1);
+                return (<div key={a}>
+                  <div className="flex justify-between text-xs mb-1"><span className="text-gray-500 font-medium">{a}</span><span className="font-bold text-gray-800">{fmt(k?.canoni||0)}</span></div>
+                  <div className="h-1.5 rounded-full bg-gray-100"><div className={`h-1.5 rounded-full ${a==='2026'?'bg-blue-500':a==='2025'?'bg-purple-400':'bg-gray-400'}`} style={{width:`${(k?.canoni||0)/maxC*100}%`}}/></div>
+                </div>);
               })}
             </div>
           </div>
 
-          {/* Attacco/Difesa */}
           <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-sm">
             <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">Mix Attacco / Difesa</h3>
             <div className="space-y-3">
               {ANNI.map(a => {
-                const kpi = getKpi(a);
-                const att = kpi?.att||0, dif = kpi?.dif||0, tot = att+dif;
-                const pA = tot > 0 ? (att/tot*100) : 0;
-                return (
-                  <div key={a}>
-                    <div className="flex justify-between text-xs mb-1"><span className="text-gray-500 font-medium">{a}</span><span className="text-gray-400">{fmt(tot)}</span></div>
-                    <div className="h-3 rounded-full bg-blue-100 overflow-hidden flex">
-                      <div className="h-3 bg-green-500" style={{width:`${pA}%`}} />
-                      <div className="h-3 bg-blue-400 flex-1" />
-                    </div>
-                    <div className="flex justify-between text-[10px] mt-0.5 text-gray-400">
-                      <span className="text-green-600">▣ Att {pA.toFixed(0)}%</span>
-                      <span className="text-blue-500">▣ Dif {(100-pA).toFixed(0)}%</span>
-                    </div>
+                const k = kpiData?.kpi?.[a];
+                const att=k?.att||0, dif=k?.dif||0, tot=att+dif;
+                const pA = tot>0?(att/tot*100):0;
+                return (<div key={a}>
+                  <div className="flex justify-between text-xs mb-1"><span className="text-gray-500 font-medium">{a}</span><span className="text-gray-400">{fmt(tot)}</span></div>
+                  <div className="h-3 rounded-full bg-blue-100 overflow-hidden flex">
+                    <div className="h-3 bg-green-500" style={{width:`${pA}%`}}/>
+                    <div className="h-3 bg-blue-400 flex-1"/>
                   </div>
-                );
+                  <div className="flex justify-between text-[10px] mt-0.5">
+                    <span className="text-green-600">▣ Att {pA.toFixed(0)}%</span>
+                    <span className="text-blue-500">▣ Dif {(100-pA).toFixed(0)}%</span>
+                  </div>
+                </div>);
               })}
             </div>
           </div>
 
-          {/* Top LOB */}
           <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-sm">
             <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">Top LOB 2026</h3>
             <div className="space-y-2">
-              {byLobData26.filter(l=>l.lob&&l.lob!=='N/D').slice(0,6).map((l,i)=>{
-                const max = byLobData26[0]?.serv||1;
-                return (
-                  <div key={i}>
-                    <div className="flex justify-between text-xs mb-1"><span className="text-gray-600 truncate max-w-[140px]">{l.lob}</span><span className="font-bold text-gray-800">{fmt(l.serv)}</span></div>
-                    <div className="h-1 rounded-full bg-gray-100"><div className="h-1 rounded-full bg-orange-400" style={{width:`${l.serv/max*100}%`}} /></div>
-                  </div>
-                );
+              {byLob26.filter(l=>l.lob&&l.lob!=='N/D').slice(0,6).map((l,i)=>{
+                const max=byLob26[0]?.serv||1;
+                return (<div key={i}>
+                  <div className="flex justify-between text-xs mb-1"><span className="text-gray-600 truncate max-w-[140px]">{l.lob}</span><span className="font-bold text-gray-800">{fmt(l.serv)}</span></div>
+                  <div className="h-1 rounded-full bg-gray-100"><div className="h-1 rounded-full bg-orange-400" style={{width:`${l.serv/max*100}%`}}/></div>
+                </div>);
               })}
             </div>
           </div>
@@ -621,26 +512,47 @@ export default function Dashboard() {
         <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-sm">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Variazione per Area RAC</h3>
-            <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">2024 · 2025 · 2026</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead><tr className="text-gray-400 border-b-2 border-gray-100">
-                <th className="text-left pb-2 font-semibold">Area</th>
-                <th className="text-right pb-2 font-semibold">2024</th>
-                <th className="text-right pb-2 font-semibold">2025</th>
-                <th className="text-right pb-2 font-semibold">2026</th>
-                <th className="text-right pb-2 font-semibold">Diff 26/25</th>
-                <th className="text-right pb-2 font-semibold">Var %</th>
-                <th className="text-right pb-2 font-semibold">Deal</th>
+                {['Area','2024','2025','2026','Diff 26/25','Var %','Deal'].map((h,i)=>(
+                  <th key={h} className={`pb-2 font-semibold ${i===0?'text-left':'text-right'}`}>{h}</th>
+                ))}
               </tr></thead>
               <tbody>
-                {AREAS.map(area => (
-                  <AreaRow key={area} area={area}
-                    d24={aggregati?.['2024']?.byArea?.find(a=>a.area===area)}
-                    d25={aggregati?.['2025']?.byArea?.find(a=>a.area===area)}
-                    d26={aggregati?.['2026']?.byArea?.find(a=>a.area===area)} />
-                ))}
+                {AREAS.map(area => {
+                  let s24=0,s25=0,s26=0,n24=0,n25=0,n26=0;
+                  if (kpiData?.byArea) {
+                    kpiData.byArea.filter(a=>a.area_rac===area).forEach(a=>{
+                      s24+=(a.serv_2024||0); s25+=(a.serv_2025||0); s26+=(a.serv_2026||0);
+                    });
+                    filteredDeals.filter(d=>d.area_rac===area).forEach(d=>{
+                      if(d.anno==='2024')n24++; else if(d.anno==='2025')n25++; else if(d.anno==='2026')n26++;
+                    });
+                  } else {
+                    ['2024','2025','2026'].forEach(anno=>{
+                      const a = aggregati?.[anno]?.byArea?.find(x=>x.area===area);
+                      if(anno==='2024'){s24=a?.serv||0;n24=a?.n||0;}
+                      else if(anno==='2025'){s25=a?.serv||0;n25=a?.n||0;}
+                      else{s26=a?.serv||0;n26=a?.n||0;}
+                    });
+                  }
+                  if(!s24&&!s25&&!s26) return null;
+                  const diff=s26-s25;
+                  const varPct=s25>0?(diff/s25*100):null;
+                  return (
+                    <tr key={area} className="border-b border-gray-50 hover:bg-blue-50/30 transition-colors">
+                      <td className="py-2 pr-3"><span className="inline-block px-2 py-0.5 rounded-md bg-gray-100 text-xs font-bold text-gray-700">{area}</span></td>
+                      <td className="py-2 text-right text-gray-400 text-xs">{s24>0?fmt(s24):'—'}</td>
+                      <td className="py-2 text-right text-xs text-gray-600">{s25>0?fmt(s25):'—'}</td>
+                      <td className="py-2 text-right"><span className="text-sm font-bold text-gray-800">{s26>0?fmt(s26):'—'}</span></td>
+                      <td className={`py-2 text-right text-sm font-semibold ${diff>=0?'text-green-600':'text-red-500'}`}>{fmt(diff)}</td>
+                      <td className={`py-2 text-right text-xs font-bold ${varPct===null?'text-gray-300':varPct>=0?'text-green-600':'text-red-500'}`}>{varPct===null?'—':fmtPct(varPct)}</td>
+                      <td className="py-2 text-right text-xs text-gray-400">{n24+n25+n26}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -648,26 +560,18 @@ export default function Dashboard() {
 
         {/* Top clienti */}
         <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-sm">
-          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">Top 20 Clienti 2026</h3>
+          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">
+            Top 20 Clienti 2026{kpiData?.source==='raw'&&<span className="text-purple-500 normal-case font-normal ml-1">(filtrati)</span>}
+          </h3>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead><tr className="text-gray-400 border-b border-gray-100">
-                <th className="text-left pb-2 font-semibold">#</th>
-                <th className="text-left pb-2 font-semibold">Cliente</th>
-                <th className="text-right pb-2 font-semibold">Portafoglio</th>
-                <th className="text-right pb-2 font-semibold">Canoni</th>
-                <th className="text-right pb-2 font-semibold">Differenziale</th>
-                <th className="text-center pb-2 font-semibold">Area</th>
-                <th className="text-right pb-2 font-semibold">Deal</th>
+                {['#','Cliente','Portafoglio','Canoni','Diff.','Area','Deal'].map((h,i)=>(
+                  <th key={h} className={`pb-2 font-semibold ${i<=1?'text-left':'text-right'} ${i===5?'text-center':''}`}>{h}</th>
+                ))}
               </tr></thead>
               <tbody>
-                {(aggregati?.['2026']?.topClienti||[])
-                  .filter(c => {
-                    if (!appliedFilters.area_rac) return true;
-                    return c.area === appliedFilters.area_rac;
-                  })
-                  .slice(0, 20)
-                  .map((c, i) => (
+                {topClienti.slice(0,20).map((c,i)=>(
                   <tr key={i} className="border-b border-gray-50 hover:bg-blue-50/30">
                     <td className="py-2 text-gray-400">{i+1}</td>
                     <td className="py-2 font-medium text-gray-800 max-w-[180px] truncate">{c.nome}</td>
@@ -682,7 +586,6 @@ export default function Dashboard() {
             </table>
           </div>
         </div>
-
       </div>
     </div>
   );
