@@ -30,7 +30,7 @@ const AREAS = ['MNO','SNO','LNO','MNE','SNE','LNE','MCS','SLCE','SLCS','IC'];
 const ANNI = ['2024','2025','2026'];
 const MESI = ['','Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic'];
 const EMPTY = {
-  anno:'', mese:'', area_rac:'', lob:'', attacco_difesa:'',
+  anno:'', mese:'', area_rac:'', lob:'', attacco_difesa:'', tipo:'',
   rac_26:'', area_am_26:'', area_mng_26:'', struttura_sales_26:'',
   area_mng_spec_26:'', specialist_lss:'', specialist_sec:'',
   specialist_cloud:'', iot:''
@@ -147,6 +147,17 @@ function FilterSidebar({ portafoglio, aggregati, filters, onChange, onReset, col
           </div>
         </Section>
 
+        <Section label="Tipologia">
+          <div className="flex gap-1">
+            {[['','Tutti'],['CTR','CTR'],['TTV','TTV']].map(([v,l]) => (
+              <button key={v} onClick={() => onChange('tipo', v)}
+                className={`flex-1 py-1 rounded-lg text-[10px] font-semibold border transition-colors ${filters.tipo===v?'bg-teal-600 text-white border-teal-600':'bg-white text-gray-500 border-gray-200 hover:border-teal-300'}`}>
+                {l}
+              </button>
+            ))}
+          </div>
+        </Section>
+
         <div className="border-t border-dashed border-blue-200 pt-3">
           <p className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-3 flex items-center gap-1">
             <BarChart2 className="w-3 h-3" /> Da Anagrafica
@@ -218,6 +229,7 @@ export default function Dashboard() {
       if (f.area_rac && d.area_rac !== f.area_rac) return false;
       if (f.lob && d.lob !== f.lob) return false;
       if (f.attacco_difesa && d.attacco_difesa !== f.attacco_difesa) return false;
+      if (f.tipo && d.tipo !== f.tipo) return false;
       // Filtri anagrafica — join con portafoglio
       if (hasAnagraficaFilter) {
         const key = (d.ragione_sociale_capogruppo || d.ragione_sociale || '').toLowerCase().trim();
