@@ -36,8 +36,17 @@ function normalizeLob(lob, specialist, descrizione, tipo) {
 
 // ─── Aggregazione ──────────────────────────────────────────────────
 async function computeAndSaveAggregates(anno) {
-  const snap = await db.collection('deals').where('anno', '==', String(anno)).get();
-  const deals = snap.docs.map(d => d.data());
+const deals = [];
+let lastDoc = null;
+while (true) {
+  let q = db.collection('deals').where('anno', '==', String(anno)).limit(500);
+  if (lastDoc) q = q.startAfter(lastDoc);
+  const snap = await q.get();
+  if (snap.empty) break;
+  snap.docs.forEach(d => deals.push(d.data()));
+  if (snap.docs.length < 500) break;
+  lastDoc = snap.docs[snap.docs.length - 1];
+}
   const sum = (arr, f) => arr.reduce((s, d) => s + (d[f] || 0), 0);
 
   const kpi = {
