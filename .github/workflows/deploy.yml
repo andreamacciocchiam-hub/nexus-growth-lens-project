@@ -23,7 +23,7 @@ jobs:
         run: npm install
 
       - name: Build frontend
-        run: npm run build -- --force
+        run: npm run build
       - name: Clear cache
         run: echo "Cache bust $(date)" > cache-bust.txt
       - name: Install functions dependencies
