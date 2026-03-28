@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 
 const callFn = async (name, payload) => {
-  const fn = httpsCallable(functionsInstance, name, { timeout: 600000 });
+  const fn = httpsCallable(functionsInstance, name, { timeout: 900000 }); // 15 minuti
   const res = await fn(payload);
   return res.data;
 };
