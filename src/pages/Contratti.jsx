@@ -5,8 +5,9 @@ import { Search, X, Loader2, CheckCircle } from 'lucide-react';
 import DealsFilters, { EMPTY_FILTERS, applyFilters } from '../components/bi/DealsFilters';
 
 function fmt(v) {
-  if (!v) return '€0';
-  if (Math.abs(v) >= 1_000_000) return `€${(v/1_000_000).toFixed(2)}M`;
+  if (!v && v !== 0) return '—';
+  return Math.round(v || 0).toLocaleString('it-IT');
+}M`;
   if (Math.abs(v) >= 1_000) return `€${(v/1_000).toFixed(0)}K`;
   return `€${Math.round(v)}`;
 }
