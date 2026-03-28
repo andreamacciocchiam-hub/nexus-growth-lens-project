@@ -4,8 +4,8 @@ import { Search, X, Loader2, CheckCircle, Filter, ChevronDown } from 'lucide-rea
 
 function fmt(v) {
   if (!v && v !== 0) return '—';
-  const val = (v||0)*1000;
-  if (Math.abs(val) >= 1_000_000_000) return `€${(val/1_000_000_000).toFixed(2)}B`;
+  return Math.round(v || 0).toLocaleString('it-IT');
+}B`;
   if (Math.abs(val) >= 1_000_000) return `€${(val/1_000_000).toFixed(2)}M`;
   if (Math.abs(val) >= 1_000) return `€${(val/1_000).toFixed(0)}K`;
   return `€${Math.round(val)}`;
