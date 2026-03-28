@@ -25,23 +25,32 @@ const ANNO_COLORS = {
   '2026': { bg: 'bg-blue-100', text: 'text-blue-700', border: 'border-blue-300', accent: 'bg-blue-600', light: 'bg-blue-50', bar: 'bg-blue-500' },
 };
 
-// Parsing naming convention
+// Parsing naming convention — riconosce qualsiasi nome file
 function parseFileName(name) {
-  const base = name.split('/').pop().replace('.xlsx', '').toLowerCase();
+  const base = name.split('/').pop().replace(/\.(xlsx|xlsb|xls)$/i, '').toLowerCase();
+
+  // Portafoglio clienti
+  if (base.includes('portafoglio')) {
+    const m = base.match(/(\d{2})(\d{4})/);
+    if (m) return { type: 'portafoglio', mese: parseInt(m[1]), anno: m[2] };
+    return { type: 'portafoglio', mese: null, anno: null };
+  }
+
+  // Naming convention dati: dati2024, dati022026
   if (base.startsWith('dati')) {
     const rest = base.replace('dati', '');
     if (rest === '2024') return { type: 'consuntivo', anno: '2024', mese: null };
     if (rest === '2025') return { type: 'consuntivo', anno: '2025', mese: null };
-    // es. 022026
+    if (rest === '2026') return { type: 'consuntivo', anno: '2026', mese: null };
     const m = rest.match(/^(\d{2})(\d{4})$/);
     if (m) return { type: 'consuntivo', anno: m[2], mese: parseInt(m[1]) };
   }
-  if (base.startsWith('portafoglioclienti')) {
-    const rest = base.replace('portafoglioclienti', '');
-    const m = rest.match(/^(\d{2})(\d{4})$/);
-    if (m) return { type: 'portafoglio', mese: parseInt(m[1]), anno: m[2] };
-    return { type: 'portafoglio', mese: null, anno: null };
-  }
+
+  // Fallback: riconosce anno ovunque nel nome
+  if (base.includes('2024') || /\b24\b/.test(base)) return { type: 'consuntivo', anno: '2024', mese: null };
+  if (base.includes('2025') || /\b25\b/.test(base)) return { type: 'consuntivo', anno: '2025', mese: null };
+  if (base.includes('2026') || /\b26\b/.test(base)) return { type: 'consuntivo', anno: '2026', mese: null };
+
   return { type: 'unknown' };
 }
 
@@ -479,7 +488,7 @@ export default function Import() {
                     <label className={`flex items-center justify-center gap-2 w-full py-2 rounded-xl border-2 border-dashed text-xs font-medium cursor-pointer transition-all ${c.border} ${c.text} hover:${c.bg}`}>
                       <Upload className="w-3.5 h-3.5" />
                       Carica nuovo file ({anno})
-                      <input type="file" accept=".xlsx" className="hidden"
+                      <input type="file" accept=".xlsx,.xlsb,.xls" className="hidden"
                         onChange={e => handleUpload('consuntivi', e.target.files[0], anno)}
                         disabled={uploading[anno] || isImporting} />
                     </label>
