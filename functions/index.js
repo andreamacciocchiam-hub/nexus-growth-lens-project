@@ -170,7 +170,8 @@ exports.importFromStorage = onCall(
     const wb = XLSX.read(buffer, { type: 'buffer' });
     const sheetName = wb.SheetNames.find(n => n.includes(anno)) || wb.SheetNames[0];
     const ws = wb.Sheets[sheetName];
-    const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+    if (ws['!autofilter']) delete ws['!autofilter'];
+    const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: false });
 
     const headerIdx = rawRows.findIndex(row => row.some(c => String(c ?? '').trim() === 'ID SDW'));
     if (headerIdx === -1) throw new Error('Header "ID SDW" non trovato');
