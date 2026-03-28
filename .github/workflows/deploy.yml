@@ -21,7 +21,8 @@ jobs:
 
       - name: Build frontend
         run: npm run build
-
+      - name: Clear cache
+        run: echo "Cache bust $(date)" > cache-bust.txt
       - name: Install functions dependencies
         run: npm install
         working-directory: functions
