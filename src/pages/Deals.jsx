@@ -1,53 +1,93 @@
-import { useState, useMemo } from 'react';
-import { Search, Filter, ArrowUpDown, ExternalLink } from 'lucide-react';
-import { formatEuro } from '@/components/dataStore';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { collection, query, where, limit, getDocs, startAfter } from 'firebase/firestore';
+import { db } from '@/api/firebaseClient';
+import { Search, Filter, ArrowUpDown, Loader2 } from 'lucide-react';
 
-// Full dataset parsed from Excel 2025 + 2026 (top records)
-const DEALS = [
-  { anno: '2025', id: 'OP-461457', cliente: 'A2A S.P.A.', societa: 'A2A S.P.A.', desc: 'Gara Servizi Google - 2° anno 2025', area: 'MNO', rac: 'PLOZNER MORENO', tipo: 'Attacco', ambito: 'Fisso', lob: 'Cloud', serv: 60000, canoni: 60000, diff: 60000 },
-  { anno: '2025', id: 'OP-461457', cliente: 'A2A S.P.A.', societa: 'A2A S.P.A.', desc: 'Gara Servizi Google - 2° anno 2025', area: 'MNO', rac: 'PLOZNER MORENO', tipo: 'Difesa', ambito: 'Fisso', lob: 'Cloud', serv: 8340667, canoni: 8340667, diff: 2081667 },
-  { anno: '2025', id: 'OP-512293', cliente: 'NEXI S.P.A.', societa: 'NEXI PAYMENTS SPA', desc: 'Estensione 2025 SMS Bulk di Gruppo', area: 'MNO', rac: 'PLOZNER MORENO', tipo: 'Difesa', ambito: 'Mobile', lob: 'Connettività', serv: 8084809, canoni: 8006309, diff: 78500 },
-  { anno: '2025', id: 'OP-466986', cliente: 'ENEL S.P.A.', societa: 'E-DISTRIBUZIONE SPA', desc: 'Gara - Fonia fissa 2024', area: 'IC', rac: 'DE MARCO MARIAROSA', tipo: 'Difesa', ambito: 'Fisso', lob: 'Connettività', serv: 4786351, canoni: 4786351, diff: 2263125 },
-  { anno: '2025', id: 'OP-344409', cliente: 'ASSICURAZIONI GENERALI SPA', societa: 'GENERALI OPS SRL', desc: 'Rete Italia Global Local 2025-2027', area: 'MNE', rac: 'CORZANI SABRINA', tipo: 'Attacco', ambito: 'Fisso', lob: 'Connettività', serv: 3085219, canoni: 740406, diff: 1640406 },
-  { anno: '2025', id: 'OP-450825', cliente: 'NEXI S.P.A.', societa: 'NEXI PAYMENTS SPA', desc: 'Accordo ORACLE OCI-JAVA', area: 'MNO', rac: 'PLOZNER MORENO', tipo: 'Difesa', ambito: 'Fisso', lob: 'Cloud', serv: 10500001, canoni: 3500000, diff: 2166667 },
-  { anno: '2025', id: 'OP-446547', cliente: 'NEXI S.P.A.', societa: 'NEXI PAYMENTS SPA', desc: 'Red Hat 2025 Nexi', area: 'MNO', rac: 'PLOZNER MORENO', tipo: 'Attacco', ambito: 'Fisso', lob: 'Other IT', serv: 12150977, canoni: 4050326, diff: 4050326 },
-  { anno: '2025', id: 'OP-446661', cliente: 'BANCA POP. SONDRIO', societa: 'BANCA POPOLARE DI SONDRIO S.P.A.', desc: 'Rinnovo rete dati e VoIP 2025', area: 'MNE', rac: 'CORZANI SABRINA', tipo: 'Difesa', ambito: 'Fisso', lob: 'Connettività', serv: 1907643, canoni: 1907643, diff: 0 },
-  { anno: '2025', id: 'OP-455286', cliente: 'ENI SPA', societa: 'ENI SPA', desc: 'Estensione USER CENTRIC 2025-27', area: 'IC', rac: 'DE MARCO MARIAROSA', tipo: 'Difesa', ambito: 'Fisso', lob: 'Other IT', serv: 2417711, canoni: 1970214, diff: 260664 },
-  { anno: '2025', id: 'OP-444198', cliente: 'INTESA SANPAOLO S.P.A.', societa: 'INTESA SANPAOLO ASSICURA S.P.A.', desc: 'Viaggia con Me 2025', area: 'MNO', rac: 'PLOZNER MORENO', tipo: 'Difesa', ambito: 'IOT', lob: 'IoT', serv: 2255709, canoni: 2255709, diff: 0 },
-  { anno: '2025', id: 'OP-450095', cliente: 'INTESA SANPAOLO S.P.A.', societa: 'INTESA SANPAOLO S.P.A.', desc: '#skyrocket GCP - prima trance', area: 'MNO', rac: 'PLOZNER MORENO', tipo: 'Attacco', ambito: 'Fisso', lob: 'Cloud', serv: 2040984, canoni: 2040984, diff: 2040984 },
-  { anno: '2025', id: 'OP-443869', cliente: 'ACEA S.P.A.', societa: 'ACEA S.P.A.', desc: 'Rinnovo Google 2025', area: 'MCS', rac: 'COCCHIERI ROBERTA', tipo: 'Difesa', ambito: 'Fisso', lob: 'Cloud', serv: 2021053, canoni: 2021053, diff: -3178947 },
-  { anno: '2025', id: 'OP-445268', cliente: 'MEDIOLANUM S.P.A.', societa: 'BANCA MEDIOLANUM S.P.A.', desc: 'Supporto Oracle PULA MW 2025', area: 'MNO', rac: 'PLOZNER MORENO', tipo: 'Difesa', ambito: 'Fisso', lob: 'Other IT', serv: 2651285, canoni: 2651285, diff: 0 },
-  { anno: '2025', id: 'OP-461240', cliente: 'ASSICURAZIONI GENERALI SPA', societa: 'GENERALI OPS SRL', desc: 'LAN Management 2025', area: 'MNE', rac: 'CORZANI SABRINA', tipo: 'Difesa', ambito: 'Fisso', lob: 'Other IT', serv: 1545000, canoni: 1545000, diff: 439000 },
-  { anno: '2025', id: 'OP-421981', cliente: 'CREDIT AGRICOLE ITALIA SPA', societa: 'CREDIT AGRICOLE GROUP SOLUTIONS', desc: 'Rollout W11', area: 'MNE', rac: 'CORZANI SABRINA', tipo: 'Attacco', ambito: 'Fisso', lob: 'Other IT', serv: 580000, canoni: 166469, diff: 580000 },
-  { anno: '2025', id: 'OP-445330', cliente: 'FIBERCOP S.P.A.', societa: 'FIBERCOP SPA', desc: 'ON-TOP: SERVIZIO TIM ECOM 2025', area: 'IC', rac: 'DE MARCO MARIAROSA', tipo: 'Attacco', ambito: 'IOT', lob: 'IoT', serv: 538000, canoni: 190000, diff: 538000 },
-  // 2026 records
-  { anno: '2026', id: 'OP-580001', cliente: 'NEXI S.P.A.', societa: 'NEXI PAYMENTS SPA', desc: 'Rinnovo Cloud Services 2026', area: 'MNO', rac: 'PLOZNER MORENO', tipo: 'Difesa', ambito: 'Fisso', lob: 'Cloud', serv: 12500000, canoni: 10200000, diff: 4200000 },
-  { anno: '2026', id: 'OP-580002', cliente: 'INTESA SANPAOLO S.P.A.', societa: 'INTESA SANPAOLO S.P.A.', desc: 'Skyrocket GCP Extended 2026', area: 'MNO', rac: 'PLOZNER MORENO', tipo: 'Attacco', ambito: 'Fisso', lob: 'Cloud', serv: 5800000, canoni: 5800000, diff: 5800000 },
-  { anno: '2026', id: 'OP-580003', cliente: 'ENI SPA', societa: 'ENI SPA', desc: 'Rete Integrata ENI 2026-2028', area: 'IC', rac: 'DE MARCO MARIAROSA', tipo: 'Difesa', ambito: 'Fisso', lob: 'Connettività', serv: 4200000, canoni: 4100000, diff: 1200000 },
-  { anno: '2026', id: 'OP-580004', cliente: 'ASSICURAZIONI GENERALI SPA', societa: 'GENERALI OPS SRL', desc: 'Digital Transformation 2026', area: 'MNE', rac: 'CORZANI SABRINA', tipo: 'Attacco', ambito: 'Fisso', lob: 'Other IT', serv: 3100000, canoni: 2800000, diff: 3100000 },
-  { anno: '2026', id: 'OP-580005', cliente: 'LEONARDO SPA', societa: 'LEONARDO S.P.A.', desc: 'Security Framework 2026', area: 'MCS', rac: 'COCCHIERI ROBERTA', tipo: 'Attacco', ambito: 'Fisso', lob: 'Security', serv: 2800000, canoni: 2200000, diff: 2800000 },
-  { anno: '2026', id: 'OP-580006', cliente: 'TELECOM ITALIA S.P.A.', societa: 'TIM S.P.A.', desc: 'Cloud Migration TIM 2026', area: 'IC', rac: 'ANNUNZIATO ARMANDO', tipo: 'Difesa', ambito: 'Fisso', lob: 'Cloud', serv: 3900000, canoni: 3900000, diff: 1800000 },
-];
+function fmt(v) {
+  if (!v && v !== 0) return '€0';
+  if (Math.abs(v) >= 1_000_000) return `€${(v / 1_000_000).toFixed(2)}M`;
+  if (Math.abs(v) >= 1_000) return `€${(v / 1_000).toFixed(0)}K`;
+  return `€${Math.round(v)}`;
+}
 
+async function loadDealsForAnno(anno) {
+  const col = collection(db, 'deals');
+  let all = [];
+  let lastDoc = null;
+  while (true) {
+    const constraints = [col, where('anno', '==', anno), limit(100)];
+    if (lastDoc) constraints.push(startAfter(lastDoc));
+    const snap = await getDocs(query(...constraints));
+    if (snap.empty) break;
+    snap.docs.forEach(d => all.push({ id: d.id, ...d.data() }));
+    if (snap.docs.length < 100) break;
+    lastDoc = snap.docs[snap.docs.length - 1];
+    await new Promise(r => setTimeout(r, 50));
+  }
+  return all;
+}
+
+const ANNI = ['2024', '2025', '2026'];
 const AREAS = ['Tutti', 'MNO', 'SNO', 'LNO', 'MNE', 'SNE', 'LNE', 'MCS', 'SLCE', 'SLCS', 'IC'];
 const TYPES = ['Tutti', 'Attacco', 'Difesa'];
-const YEARS = ['Tutti', '2025', '2026'];
+const LOBS = ['Tutti', 'Cloud', 'Connettività', 'IoT', 'Other IT', 'Licensing', 'Security'];
 
 export default function Deals() {
+  const [allDeals, setAllDeals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadingAnno, setLoadingAnno] = useState('');
+  const [loadedCount, setLoadedCount] = useState(0);
   const [search, setSearch] = useState('');
+  const [anno, setAnno] = useState('2026');
   const [area, setArea] = useState('Tutti');
   const [tipo, setTipo] = useState('Tutti');
-  const [anno, setAnno] = useState('Tutti');
-  const [sort, setSort] = useState({ key: 'serv', dir: 'desc' });
+  const [lob, setLob] = useState('Tutti');
+  const [sort, setSort] = useState({ key: 'serv_i_anno', dir: 'desc' });
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 50;
+  const cancelRef = useRef(false);
+
+  useEffect(() => {
+    cancelRef.current = false;
+    loadAll();
+    return () => { cancelRef.current = true; };
+  }, []);
+
+  const loadAll = async () => {
+    setLoading(true);
+    setAllDeals([]);
+    setLoadedCount(0);
+    let all = [];
+    for (const a of ANNI) {
+      if (cancelRef.current) break;
+      setLoadingAnno(a);
+      const deals = await loadDealsForAnno(a);
+      all = [...all, ...deals];
+      setLoadedCount(all.length);
+    }
+    setAllDeals(all);
+    setLoading(false);
+  };
+
+  const toggleSort = (key) => {
+    setSort(prev => ({ key, dir: prev.key === key && prev.dir === 'desc' ? 'asc' : 'desc' }));
+    setPage(1);
+  };
 
   const filtered = useMemo(() => {
-    let data = DEALS.filter(d => {
-      if (area !== 'Tutti' && d.area !== area) return false;
-      if (tipo !== 'Tutti' && d.tipo !== tipo) return false;
+    let data = allDeals.filter(d => {
       if (anno !== 'Tutti' && d.anno !== anno) return false;
+      if (area !== 'Tutti' && d.area_rac !== area) return false;
+      if (tipo !== 'Tutti' && d.attacco_difesa !== tipo) return false;
+      if (lob !== 'Tutti' && d.lob !== lob) return false;
       if (search) {
         const q = search.toLowerCase();
-        return d.cliente.toLowerCase().includes(q) || d.desc.toLowerCase().includes(q) || d.id.toLowerCase().includes(q);
+        return (
+          d.ragione_sociale_capogruppo?.toLowerCase().includes(q) ||
+          d.ragione_sociale?.toLowerCase().includes(q) ||
+          d.descrizione?.toLowerCase().includes(q) ||
+          d.id_sdw?.toLowerCase().includes(q)
+        );
       }
       return true;
     });
@@ -57,84 +97,115 @@ export default function Deals() {
       return sort.dir === 'asc' ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1);
     });
     return data;
-  }, [search, area, tipo, anno, sort]);
+  }, [allDeals, search, anno, area, tipo, lob, sort]);
 
-  const toggleSort = (key) => setSort(prev => ({ key, dir: prev.key === key && prev.dir === 'desc' ? 'asc' : 'desc' }));
+  const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
 
   return (
-    <div className="p-6 space-y-5">
+    <div className="p-6 space-y-5 min-h-full bg-gray-50">
       <div>
-        <h2 className="text-2xl font-bold text-slate-800">Trattative & Contratti</h2>
-        <p className="text-slate-500 text-sm mt-1">Dettaglio di tutte le opportunità 2025 e 2026</p>
+        <h2 className="text-2xl font-bold text-gray-800">Trattative & Contratti</h2>
+        <p className="text-gray-500 text-sm mt-1">
+          {loading
+            ? `Caricamento anno ${loadingAnno}... ${loadedCount.toLocaleString('it-IT')} record`
+            : `${filtered.length.toLocaleString('it-IT')} risultati su ${allDeals.length.toLocaleString('it-IT')} totali`}
+        </p>
       </div>
 
-      {/* Filters */}
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 flex flex-wrap gap-3 items-center">
+      {/* Filtri */}
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-wrap gap-3 items-center">
         <div className="relative flex-1 min-w-48">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input value={search} onChange={e => setSearch(e.target.value)}
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }}
             placeholder="Cerca cliente, descrizione, ID..."
-            className="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
         {[
-          { label: 'Anno', val: anno, set: setAnno, opts: YEARS },
-          { label: 'Area', val: area, set: setArea, opts: AREAS },
-          { label: 'Tipo', val: tipo, set: setTipo, opts: TYPES },
+          { label: 'Anno', val: anno, set: v => { setAnno(v); setPage(1); }, opts: ['Tutti', ...ANNI] },
+          { label: 'Area', val: area, set: v => { setArea(v); setPage(1); }, opts: AREAS },
+          { label: 'Tipo', val: tipo, set: v => { setTipo(v); setPage(1); }, opts: TYPES },
+          { label: 'LOB',  val: lob,  set: v => { setLob(v);  setPage(1); }, opts: LOBS },
         ].map(f => (
           <div key={f.label} className="flex items-center gap-2">
-            <Filter size={14} className="text-slate-400" />
+            <Filter size={14} className="text-gray-400" />
             <select value={f.val} onChange={e => f.set(e.target.value)}
-              className="text-sm border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+              className="text-sm border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
               {f.opts.map(o => <option key={o}>{o}</option>)}
             </select>
           </div>
         ))}
-        <span className="text-xs text-slate-400 ml-auto">{filtered.length} risultati</span>
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 border-b border-slate-100">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Anno</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">ID</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Cliente</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Descrizione</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Area</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">LOB</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Tipo</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide cursor-pointer select-none" onClick={() => toggleSort('serv')}>
-                  <span className="flex items-center gap-1">Serv. I Anno <ArrowUpDown size={12} /></span>
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide cursor-pointer select-none" onClick={() => toggleSort('diff')}>
-                  <span className="flex items-center gap-1">Differenziale <ArrowUpDown size={12} /></span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((d, i) => (
-                <tr key={`${d.id}-${d.tipo}-${i}`} className={`border-b border-slate-50 hover:bg-blue-50/30 transition-colors ${i % 2 === 0 ? '' : 'bg-slate-50/30'}`}>
-                  <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${d.anno === '2026' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'}`}>{d.anno}</span>
-                  </td>
-                  <td className="px-4 py-3 text-blue-600 font-mono text-xs">{d.id}</td>
-                  <td className="px-4 py-3 font-medium text-slate-800 max-w-[160px] truncate" title={d.cliente}>{d.cliente}</td>
-                  <td className="px-4 py-3 text-slate-600 max-w-[200px] truncate" title={d.desc}>{d.desc}</td>
-                  <td className="px-4 py-3"><span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded text-xs font-medium">{d.area}</span></td>
-                  <td className="px-4 py-3 text-slate-600 text-xs">{d.lob}</td>
-                  <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${d.tipo === 'Attacco' ? 'bg-amber-100 text-amber-700' : 'bg-violet-100 text-violet-700'}`}>{d.tipo}</span>
-                  </td>
-                  <td className="px-4 py-3 font-semibold text-slate-800">{formatEuro(d.serv)}</td>
-                  <td className={`px-4 py-3 font-medium ${d.diff >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{formatEuro(d.diff)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {loading ? (
+        <div className="flex flex-col items-center justify-center py-16 gap-3 text-gray-400">
+          <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
+          <p className="text-sm">Caricamento anno {loadingAnno}...</p>
+          <p className="text-xs">{loadedCount.toLocaleString('it-IT')} record caricati</p>
         </div>
-      </div>
+      ) : (
+        <>
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-gray-50 border-b border-gray-100">
+                  <tr>
+                    <th className="px-3 py-3 text-left font-semibold text-gray-500 uppercase tracking-wide text-[10px]">Anno</th>
+                    <th className="px-3 py-3 text-left font-semibold text-gray-500 uppercase tracking-wide text-[10px]">ID SDW</th>
+                    <th className="px-3 py-3 text-left font-semibold text-gray-500 uppercase tracking-wide text-[10px]">Cliente</th>
+                    <th className="px-3 py-3 text-left font-semibold text-gray-500 uppercase tracking-wide text-[10px]">Descrizione</th>
+                    <th className="px-3 py-3 text-left font-semibold text-gray-500 uppercase tracking-wide text-[10px]">Area</th>
+                    <th className="px-3 py-3 text-left font-semibold text-gray-500 uppercase tracking-wide text-[10px]">LOB</th>
+                    <th className="px-3 py-3 text-left font-semibold text-gray-500 uppercase tracking-wide text-[10px]">Tipo</th>
+                    <th className="px-3 py-3 text-left font-semibold text-gray-500 uppercase tracking-wide text-[10px] cursor-pointer select-none" onClick={() => toggleSort('serv_i_anno')}>
+                      <span className="flex items-center gap-1">Serv. I Anno <ArrowUpDown size={10} /></span>
+                    </th>
+                    <th className="px-3 py-3 text-left font-semibold text-gray-500 uppercase tracking-wide text-[10px] cursor-pointer select-none" onClick={() => toggleSort('differenziale_servizi')}>
+                      <span className="flex items-center gap-1">Differenziale <ArrowUpDown size={10} /></span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paged.map((d, i) => (
+                    <tr key={d.id} className={`border-b border-gray-50 hover:bg-blue-50/30 transition-colors ${i % 2 === 0 ? '' : 'bg-gray-50/30'}`}>
+                      <td className="px-3 py-2">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${d.anno === '2026' ? 'bg-green-100 text-green-700' : d.anno === '2025' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>{d.anno}</span>
+                      </td>
+                      <td className="px-3 py-2 text-blue-600 font-mono">{d.id_sdw}</td>
+                      <td className="px-3 py-2 font-medium text-gray-800 max-w-[160px] truncate">{d.ragione_sociale_capogruppo || d.ragione_sociale}</td>
+                      <td className="px-3 py-2 text-gray-600 max-w-[200px] truncate">{d.descrizione}</td>
+                      <td className="px-3 py-2"><span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[10px] font-medium">{d.area_rac}</span></td>
+                      <td className="px-3 py-2 text-gray-600">{d.lob}</td>
+                      <td className="px-3 py-2">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${d.attacco_difesa === 'Attacco' ? 'bg-amber-100 text-amber-700' : 'bg-violet-100 text-violet-700'}`}>{d.attacco_difesa}</span>
+                      </td>
+                      <td className="px-3 py-2 font-semibold text-gray-800">{fmt(d.serv_i_anno)}</td>
+                      <td className={`px-3 py-2 font-medium ${(d.differenziale_servizi || 0) >= 0 ? 'text-green-600' : 'text-red-500'}`}>{fmt(d.differenziale_servizi)}</td>
+                    </tr>
+                  ))}
+                  {paged.length === 0 && (
+                    <tr><td colSpan={9} className="text-center py-8 text-gray-400">Nessun risultato</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between text-xs text-gray-500">
+              <span>Pagina {page} di {totalPages}</span>
+              <div className="flex gap-1">
+                <button onClick={() => setPage(p => Math.max(1, p-1))} disabled={page === 1} className="px-2 py-1 rounded border border-gray-200 disabled:opacity-40 hover:bg-gray-50">←</button>
+                {[...Array(Math.min(5, totalPages))].map((_, i) => {
+                  const pg = Math.max(1, Math.min(totalPages - 4, page - 2)) + i;
+                  return <button key={pg} onClick={() => setPage(pg)} className={`px-2.5 py-1 rounded border ${pg === page ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-200 hover:bg-gray-50'}`}>{pg}</button>;
+                })}
+                <button onClick={() => setPage(p => Math.min(totalPages, p+1))} disabled={page === totalPages} className="px-2 py-1 rounded border border-gray-200 disabled:opacity-40 hover:bg-gray-50">→</button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
